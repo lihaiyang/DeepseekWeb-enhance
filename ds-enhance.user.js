@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         DS Enhance
 // @namespace    https://github.com/calendar0917/ds-enhance
-// @version      3.0.0
-// @description  批量删除、Fork 对话、会话分类、搜索、导出、批量重命名
+// @version      3.1.0
+// @description  批量删除、Fork 对话、会话分类、搜索、导出、批量重命名、提示词注入
 // @author       ds-enhance
 // @match        https://chat.deepseek.com/*
 // @grant        none
-// @run-at       document-idle
+// @run-at       document-start
 // ==/UserScript==
 
 (function () {
@@ -14,6 +14,73 @@
 
   const API = 'https://chat.deepseek.com/api/v0';
   const LS_CATS = 'dse_categories';
+  const LS_PROMPT = 'dse_custom_prompt';
+  const CUSTOM_PROMPT_MARKER = '[自定义提示词]';
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Prompt Injection (runs at document-start, before page scripts)
+  // ═══════════════════════════════════════════════════════════════════
+  function modifyRequest(bodyStr) {
+    const customPrompt = (localStorage.getItem(LS_PROMPT) || '').trim();
+    if (!customPrompt || !bodyStr) return bodyStr;
+    if (bodyStr.includes(CUSTOM_PROMPT_MARKER)) return bodyStr;
+    try {
+      const parsed = JSON.parse(bodyStr);
+      const tagged = `${CUSTOM_PROMPT_MARKER}\n${customPrompt}`;
+      if (parsed.prompt && typeof parsed.prompt === 'string') {
+        parsed.prompt = tagged + '\n\n' + parsed.prompt;
+        return JSON.stringify(parsed);
+      }
+      if (parsed.messages?.length) {
+        parsed.messages.unshift({ role: 'system', content: tagged });
+        return JSON.stringify(parsed);
+      }
+    } catch { /* not JSON */ }
+    return bodyStr;
+  }
+
+  // Hook XHR
+  const XHRProto = XMLHttpRequest.prototype;
+  const _origOpen = XHRProto.open;
+  const _origSend = XHRProto.send;
+  const _xhrMeta = new WeakMap();
+
+  XHRProto.open = function (method, url, ...rest) {
+    _xhrMeta.set(this, { url });
+    return _origOpen.apply(this, [method, url, ...rest]);
+  };
+
+  XHRProto.send = function (body) {
+    const meta = _xhrMeta.get(this);
+    if (meta && meta.url.includes('completion') && body) {
+      body = modifyRequest(body);
+    }
+    return _origSend.apply(this, [body]);
+  };
+
+  // Hook fetch
+  const _origFetch = window.fetch;
+
+  window.fetch = async function (...args) {
+    const url = (typeof args[0] === 'string') ? args[0] : args[0]?.url;
+    if (url && url.includes('completion') && args[1]?.body) {
+      args[1].body = modifyRequest(args[1].body);
+    }
+    return _origFetch.apply(this, args);
+  };
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Wait for DOM before initializing UI
+  // ═══════════════════════════════════════════════════════════════════
+  function waitForDOM() {
+    return new Promise(resolve => {
+      if (document.body) resolve();
+      else new MutationObserver(() => { if (document.body) resolve(); })
+        .observe(document.documentElement, { childList: true });
+    });
+  }
+
+  waitForDOM().then(() => {
 
   // ═══════════════════════════════════════════════════════════════════
   //  API
@@ -291,6 +358,7 @@
       <button data-tab="search">搜索</button>
       <button data-tab="export">导出</button>
       <button data-tab="rename">重命名</button>
+      <button data-tab="prompt">提示词</button>
     </div>
     <div class="dse-bd">
 
@@ -399,6 +467,17 @@
         <div id="rnm-status" class="dse-prog" style="display:none"></div>
         <div id="rnm-preview-area"></div>
         <div id="rnm-list"></div>
+      </div>
+
+      <!-- prompt injection -->
+      <div id="sec-prompt" class="dse-section">
+        <div style="color:#aaa;font-size:13px;margin-bottom:8px">自定义系统提示词（每次对话自动注入）</div>
+        <textarea id="prompt-text" class="dse-input" rows="6" placeholder="例如：你是一个严谨的技术助手，回答请用中文，输出格式用 Markdown。" style="resize:vertical;min-height:100px"></textarea>
+        <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+          <button id="prompt-save" class="pri">保存</button>
+          <button id="prompt-clear">清除</button>
+          <span id="prompt-status" style="font-size:12px;color:#666"></span>
+        </div>
       </div>
 
     </div>
@@ -959,5 +1038,27 @@
     }
   });
 
-  console.log('[DSE] DeepSeek Chat Enhance v3.0 loaded');
+  // ═══════════════════════════════════════════════════════════════════
+  //  Prompt Tab
+  // ═══════════════════════════════════════════════════════════════════
+  const promptText = panel.querySelector('#prompt-text');
+  const promptStatus = panel.querySelector('#prompt-status');
+  promptText.value = localStorage.getItem(LS_PROMPT) || '';
+
+  panel.querySelector('#prompt-save').onclick = () => {
+    const val = promptText.value.trim();
+    localStorage.setItem(LS_PROMPT, val);
+    if (val) { promptStatus.textContent = '已保存，下次对话生效'; toast('提示词已保存', 'success'); }
+    else { promptStatus.textContent = '已清除'; toast('提示词已清除', 'info'); }
+  };
+  panel.querySelector('#prompt-clear').onclick = () => {
+    promptText.value = '';
+    localStorage.removeItem(LS_PROMPT);
+    promptStatus.textContent = '已清除';
+    toast('提示词已清除', 'info');
+  };
+
+  console.log('[DSE] DeepSeek Chat Enhance v3.1 loaded');
+
+  }); // end waitForDOM
 })();

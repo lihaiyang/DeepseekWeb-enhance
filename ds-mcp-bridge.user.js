@@ -128,33 +128,36 @@
     return hint;
   }
 
-  function injectHint(bodyStr) {
+  function modifyRequest(bodyStr) {
     if (!toolRegistry.length || !bodyStr) return bodyStr;
     try {
       const parsed = JSON.parse(bodyStr);
       const hint = buildToolHint();
-      let injected = false;
+      if (!hint) return bodyStr;
+      if (bodyStr.includes('[系统指令] 你拥有以下 MCP 工具')) return bodyStr;
 
-      if (parsed.prompt && typeof parsed.prompt === 'string' && !parsed.prompt.includes('[系统指令] 你拥有以下 MCP 工具')) {
+      if (parsed.prompt && typeof parsed.prompt === 'string') {
         parsed.prompt = hint + '\n\n' + parsed.prompt;
-        injected = true;
+        console.log(`${SCRIPT_PREFIX} Tool hint injected`);
+        return JSON.stringify(parsed);
       }
-      if (!injected && parsed.messages?.length) {
+      if (parsed.messages?.length) {
         const lastMsg = parsed.messages[parsed.messages.length - 1];
         const content = lastMsg?.content;
-        if (typeof content === 'string' && !content.includes('[系统指令] 你拥有以下 MCP 工具')) {
+        if (typeof content === 'string') {
           lastMsg.content = hint + '\n\n' + content;
-          injected = true;
-        } else if (Array.isArray(content)) {
+          console.log(`${SCRIPT_PREFIX} Tool hint injected`);
+          return JSON.stringify(parsed);
+        }
+        if (Array.isArray(content)) {
           const textPart = content.find(p => p.type === 'text');
           if (textPart && !textPart.text.includes('[系统指令]')) {
             textPart.text = hint + '\n\n' + textPart.text;
-            injected = true;
+            console.log(`${SCRIPT_PREFIX} Tool hint injected`);
+            return JSON.stringify(parsed);
           }
         }
       }
-
-      if (injected) { console.log(`${SCRIPT_PREFIX} Tool hint injected`); return JSON.stringify(parsed); }
     } catch { /* not JSON */ }
     return bodyStr;
   }
@@ -271,7 +274,7 @@
 
     const isCompletion = meta.url.includes('completion');
     if (isCompletion) {
-      if (body && toolRegistry.length) body = injectHint(body);
+      if (body) body = modifyRequest(body);
 
       let requestContent = '';
       let requestLastLen = 0;
@@ -310,8 +313,8 @@
     const url = (typeof args[0] === 'string') ? args[0] : args[0]?.url;
 
     if (url && url.includes('completion')) {
-      if (args[1]?.body && toolRegistry.length) {
-        args[1].body = injectHint(args[1].body);
+      if (args[1]?.body) {
+        args[1].body = modifyRequest(args[1].body);
       }
 
       const response = await origFetch.apply(this, args);

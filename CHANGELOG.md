@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.1.0] - 2025-04-25
+
+### Added
+- 自定义系统提示词注入：新增"提示词" Tab，填写后每次对话自动注入
+- XHR + fetch hook，`@run-at document-start` 确保注入在页面脚本加载前生效
+
+## [3.0.1-mcp] - 2025-04-25
+
+### Changed
+- 移除自定义提示词功能（已迁移到 ds-enhance v3.1.0）
+
 ## [3.0.0-mcp] - 2025-04-25
 
 ### Added
