@@ -220,13 +220,24 @@
     return name + ':' + JSON.stringify(args);
   }
 
+  let _scanCount = 0;
   function scanForToolCalls(root) {
     if (!root || !root.querySelectorAll) return;
+    _scanCount++;
+    const debug = (_scanCount % 5 === 1);
 
-    // Find code blocks with mcp: prefix (rendered from ```mcp:xxx```)
+    // Find all code blocks
     const codeBlocks = root.querySelectorAll('code');
+    if (debug) console.log(`${SCRIPT_PREFIX} [scan] ${codeBlocks.length} <code> blocks found`);
+
     for (const block of codeBlocks) {
       const text = block.textContent || '';
+
+      // Debug: show any code block that contains "mcp"
+      if (debug && text.includes('mcp')) {
+        console.log(`${SCRIPT_PREFIX} [scan] code contains "mcp":`, JSON.stringify(text.substring(0, 300)));
+      }
+
       const m = text.match(/^mcp:(\w+)\s*\n([\s\S]*)$/);
       if (!m) continue;
 
@@ -237,11 +248,27 @@
       catch { args = { input: rawArgs }; }
 
       const key = callKey(toolName, args);
-      if (executedCalls.has(key)) continue; // already handled
+      if (executedCalls.has(key)) continue;
       executedCalls.add(key);
 
-      console.log(`${SCRIPT_PREFIX} 🔧 Detected tool call from DOM: ${toolName}`, args);
+      console.log(`${SCRIPT_PREFIX} 🔧 Tool call detected: ${toolName}`, args);
       executeToolCall(toolName, args);
+    }
+
+    // Fallback: scan ALL elements for mcp: text
+    if (debug) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+      let node, found = 0;
+      while ((node = walker.nextNode())) {
+        if (node.textContent.includes('mcp:')) {
+          found++;
+          if (found <= 3) {
+            console.log(`${SCRIPT_PREFIX} [scan] text node has mcp:`, JSON.stringify(node.textContent.substring(0, 200)));
+            console.log(`${SCRIPT_PREFIX} [scan] parent element:`, node.parentElement?.tagName, node.parentElement?.className?.substring(0, 60));
+          }
+        }
+      }
+      if (found) console.log(`${SCRIPT_PREFIX} [scan] total text nodes with mcp: ${found}`);
     }
   }
 
