@@ -11,3 +11,13 @@ Thumbs.db
 
 # Node (just in case)
 node_modules/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Claude
+.claude/

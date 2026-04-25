@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.0-mcp] - 2025-04-25
+
+### Added
+- **DS MCP Bridge** — 全新油猴脚本，让 DeepSeek Chat 调用本地 MCP 工具
+- SSE 拦截器：hook `window.fetch`，实时解析 DeepSeek 流式响应
+- MCP 客户端：通过 `GM_xmlhttpRequest` 绕 CORS 调用本地服务器
+- 工具调用检测：解析 AI 输出中的 `` ```mcp:tool_name`` `` 格式
+- MCP 服务器端 (Python/FastAPI)：JSON-RPC 2.0 协议，支持 7 个内置工具
+  - `execute_command`, `get_cwd`, `list_directory`, `read_file`, `write_file`
+  - `bing_search`, `crawl_webpage`
+- 控制面板：MCP 状态、调用历史、设置（服务器地址、自动执行开关）
+- 共享基础设施提取至 `shared/shared-header.js`
+
 ## [3.0.0] - 2025-04-25
 
 ### Added
