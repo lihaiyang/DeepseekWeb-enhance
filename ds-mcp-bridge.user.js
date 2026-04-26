@@ -896,7 +896,7 @@
       let html = '';
 
       // ═══ Preset Marketplace ═══
-      html += '<div style="font-size:13px;font-weight:600;color:#ccc;margin-bottom:10px">工具预设</div>';
+      html += '<div style="font-size:12px;font-weight:600;color:#ccc;margin-bottom:8px">工具预设</div>';
 
       // Group by category
       const categories = {};
@@ -907,23 +907,25 @@
       });
 
       for (const [cat, items] of Object.entries(categories)) {
-        html += `<div style="font-size:11px;color:#666;margin:8px 0 4px">${esc(cat)}</div>`;
-        html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">';
+        html += `<div style="font-size:10px;color:#666;margin:6px 0 3px">${esc(cat)}</div>`;
+        html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:6px">';
         items.forEach(p => {
           const installed = installedIds.has(p.id);
           const hasParams = p.params?.length > 0;
-          const btnText = installed ? '已启用' : (hasParams ? '配置' : '启用');
-          const btnClass = installed ? 'ext-preset-installed' : 'ext-preset-install';
+          const btnText = installed ? (hasParams ? '重新配置' : '已启用') : (hasParams ? '配置' : '启用');
+          const btnClass = 'ext-preset-install';
           const btnStyle = installed
-            ? 'background:#1a3a2a;color:#4ade80;border-color:#4ade80;cursor:default'
+            ? (hasParams
+                ? 'background:#222;color:#7aa2f7;border-color:#7aa2f7'
+                : 'background:#1a3a2a;color:#4ade80;border-color:#4ade80;pointer-events:none')
             : 'background:#222;color:#7aa2f7;border-color:#7aa2f7';
           html += `
-            <div class="ext-preset-card" data-preset-id="${esc(p.id)}" style="flex:0 0 calc(50% - 3px);padding:8px 10px;border:1px solid #333;border-radius:8px;background:#1a1a28;cursor:${installed ? 'default' : 'pointer'}">
+            <div class="ext-preset-card ext-preset-install" data-preset-id="${esc(p.id)}" style="padding:6px 8px;border:1px solid ${installed ? '#2a4a3a' : '#333'};border-radius:6px;background:${installed ? '#1a2a22' : '#1a1a28'}">
               <div style="display:flex;justify-content:space-between;align-items:center">
-                <span style="font-size:13px;font-weight:500;color:#ccc">${esc(p.name)}</span>
-                <button class="${btnClass} mcp-btn" data-preset-id="${esc(p.id)}" style="${btnStyle};font-size:10px;padding:2px 8px" ${installed ? 'disabled' : ''}>${btnText}</button>
+                <span style="font-size:12px;font-weight:500;color:#ccc">${esc(p.name)}</span>
+                <button class="${btnClass} mcp-btn" data-preset-id="${esc(p.id)}" style="${btnStyle};font-size:10px;padding:1px 7px">${btnText}</button>
               </div>
-              <div style="font-size:11px;color:#888;margin-top:3px">${esc(p.description)}</div>
+              <div style="font-size:10px;color:#888;margin-top:2px">${esc(p.description)}</div>
             </div>
           `;
         });
@@ -958,12 +960,9 @@
       }
 
       // ═══ Installed Servers ═══
-      html += '<div class="ext-section">';
-      html += '<div style="font-size:13px;font-weight:600;color:#ccc;margin-bottom:10px">已安装的服务器</div>';
-
-      if (servers.length === 0) {
-        html += '<div style="color:#666;font-size:13px;margin-bottom:10px">暂无外部 MCP 服务器</div>';
-      } else {
+      if (servers.length > 0) {
+        html += '<div class="ext-section">';
+        html += '<div style="font-size:12px;font-weight:600;color:#ccc;margin-bottom:6px">已安装</div>';
         servers.forEach(s => {
           const dotClass = s.status === 'running' ? 'dot-green' : s.status === 'stopped' ? 'dot-gray' : 'dot-red';
           const statusText = s.status === 'running' ? '运行中' : s.status === 'stopped' ? '已停止' : '异常';
@@ -972,26 +971,27 @@
 
           let actions = '';
           if (s.status === 'running') {
-            actions = `<button class="mcp-btn ext-stop" data-name="${esc(s.name)}">停止</button>`;
+            actions = `<button class="mcp-btn ext-stop" data-name="${esc(s.name)}" style="font-size:11px;padding:3px 8px">停止</button>`;
           } else {
-            actions = `<button class="mcp-btn pri ext-start" data-name="${esc(s.name)}">启动</button>`;
+            actions = `<button class="mcp-btn pri ext-start" data-name="${esc(s.name)}" style="font-size:11px;padding:3px 8px">启动</button>`;
           }
-          actions += `<button class="mcp-btn ext-remove" data-name="${esc(s.name)}" style="color:#f87171;border-color:#f87171">删除</button>`;
+          actions += `<button class="mcp-btn ext-remove" data-name="${esc(s.name)}" style="color:#f87171;border-color:#f87171;font-size:11px;padding:3px 8px">删除</button>`;
 
           html += `
-            <div class="ext-card">
+            <div class="ext-card" style="padding:8px 10px;margin-bottom:6px">
               <div class="ext-card-hd">
                 <div style="display:flex;align-items:center;gap:8px">
-                  <span class="ext-card-name">${esc(s.name)}</span>
+                  <span class="ext-card-name" style="font-size:13px">${esc(s.name)}</span>
                   <span class="ext-card-transport">${s.transport}</span>
                 </div>
                 <span class="ext-card-status"><span class="dot ${dotClass}"></span><span style="color:${statusColor}">${statusText}</span></span>
               </div>
-              <div class="ext-card-tools">工具: ${esc(toolsStr)}</div>
-              <div class="ext-card-actions">${actions}</div>
+              <div class="ext-card-tools" style="font-size:10px">工具: ${esc(toolsStr)}</div>
+              <div class="ext-card-actions" style="margin-top:6px">${actions}</div>
             </div>
           `;
         });
+        html += '</div>';
       }
 
       // Add form — JSON import
@@ -1002,25 +1002,24 @@
         }
       }, null, 2);
 
-      html += `<button class="ext-add-toggle" id="ext-add-btn">+ 导入 JSON 配置</button>`;
-      html += `<div id="ext-add-form" style="display:${extFormOpen ? 'block' : 'none'};margin-top:8px">`;
+      html += `<div style="margin-top:10px"><button class="ext-add-toggle" id="ext-add-btn">+ 导入 JSON 配置</button></div>`;
+      html += `<div id="ext-add-form" style="display:${extFormOpen ? 'block' : 'none'};margin-top:6px">`;
       html += `
-        <div style="font-size:11px;color:#888;margin-bottom:6px">
+        <div style="font-size:10px;color:#888;margin-bottom:4px">
           支持粘贴任意格式的 MCP 配置 JSON，可同时导入多个
         </div>
-        <textarea id="ext-f-json" style="width:100%;height:180px;padding:8px;border-radius:8px;border:1px solid #444;background:#0d0d18;color:#a0a0c0;font-size:11px;font-family:monospace;resize:vertical;box-sizing:border-box;outline:none;line-height:1.4" spellcheck="false">${esc(defaultJson)}</textarea>
-        <div style="margin-top:8px;display:flex;gap:6px">
-          <button class="mcp-btn pri" id="ext-add-submit">导入并启动</button>
-          <button class="mcp-btn" id="ext-add-cancel">取消</button>
+        <textarea id="ext-f-json" style="width:100%;height:120px;padding:6px;border-radius:6px;border:1px solid #444;background:#0d0d18;color:#a0a0c0;font-size:10px;font-family:monospace;resize:vertical;box-sizing:border-box;outline:none;line-height:1.4" spellcheck="false">${esc(defaultJson)}</textarea>
+        <div style="margin-top:6px;display:flex;gap:6px">
+          <button class="mcp-btn pri" id="ext-add-submit" style="font-size:11px;padding:4px 10px">导入并启动</button>
+          <button class="mcp-btn" id="ext-add-cancel" style="font-size:11px;padding:4px 10px">取消</button>
         </div>
       </div>`;
 
-      html += `<div style="margin-top:12px"><button class="mcp-btn" id="ext-refresh">刷新</button></div>`;
-      html += '</div>'; // close installed section
+      html += `<div style="margin-top:8px"><button class="mcp-btn" id="ext-refresh" style="font-size:11px">刷新</button></div>`;
 
       secExt.innerHTML = html;
 
-      // ── Preset install buttons ──
+      // ── Preset install/configure buttons ──
       secExt.querySelectorAll('.ext-preset-install').forEach(btn => {
         btn.onclick = async (e) => {
           e.stopPropagation();
@@ -1029,11 +1028,11 @@
           if (!preset) return;
 
           if (preset.params?.length > 0) {
-            // Show param form
+            // Show param form (works for both new install and re-configure)
             presetParamForm = preset;
             renderExtTab();
-          } else {
-            // One-click install
+          } else if (!installedIds.has(presetId)) {
+            // One-click install (only for no-params presets that aren't installed)
             try {
               const result = await extApiCall(`/api/presets/${presetId}/install`, 'POST', {});
               if (result.ok) {

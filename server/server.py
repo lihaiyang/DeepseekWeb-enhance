@@ -333,6 +333,10 @@ async def install_preset(preset_id: str, request: Request):
     # Use preset name as server name (sanitize for ID)
     server_name = preset_id
 
+    # If already installed, remove first (re-install)
+    if server_name in external_proxy._configs:
+        await external_proxy.remove_server(server_name)
+
     try:
         result = await external_proxy.add_server(server_name, cfg)
     except Exception as e:
