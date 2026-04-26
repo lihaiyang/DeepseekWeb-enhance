@@ -495,7 +495,7 @@
     #mcp-panel .hd .cls{background:none;border:none;color:#888;font-size:20px;cursor:pointer;padding:0 4px}
     #mcp-panel .hd .cls:hover{color:#fff}
 
-    #mcp-tabs{display:flex;border-bottom:1px solid #2a2a3a;overflow-x:auto;scrollbar-width:none}
+    #mcp-tabs{display:flex;border-bottom:1px solid #2a2a3a;overflow-x:auto;scrollbar-width:none;flex-shrink:0}
     #mcp-tabs::-webkit-scrollbar{display:none}
     #mcp-tabs button{flex:0 0 auto;padding:9px 14px;background:none;border:none;color:#888;font-size:12px;cursor:pointer;border-bottom:2px solid transparent;transition:color .15s,border-color .15s;white-space:nowrap}
     #mcp-tabs button.active{color:#7aa2f7;border-bottom-color:#7aa2f7}
@@ -600,24 +600,29 @@
 
     function posPanel() {
       const r = fab.getBoundingClientRect();
+      const TOP_MARGIN = 50; // Never cover the top bar
+
+      // Horizontal: right-align with FAB, clamp to viewport
       let l = r.right - 460;
       if (l + 460 > window.innerWidth - 10) l = window.innerWidth - 470;
       if (l < 10) l = 10;
       panel.style.left = l + 'px';
 
-      // Position panel above the fab, but ensure top doesn't go above viewport
-      const b = window.innerHeight - r.top + 10;
-      panel.style.bottom = b + 'px';
-      panel.style.top = 'auto';
+      // Try to place panel above the FAB
+      const gap = 10;
+      const spaceAbove = r.top - gap - TOP_MARGIN;
+      const maxH = Math.min(window.innerHeight * 0.75, window.innerHeight - 2 * TOP_MARGIN);
 
-      // After layout, clamp: if panel top is above viewport, pin to top
-      requestAnimationFrame(() => {
-        const rect = panel.getBoundingClientRect();
-        if (rect.top < 10) {
-          panel.style.top = '10px';
-          panel.style.bottom = 'auto';
-        }
-      });
+      if (spaceAbove >= 200) {
+        // Enough space above FAB — open upward
+        panel.style.bottom = (window.innerHeight - r.top + gap) + 'px';
+        panel.style.top = 'auto';
+      } else {
+        // Not enough space above — pin to top margin, let content scroll
+        panel.style.top = TOP_MARGIN + 'px';
+        panel.style.bottom = 'auto';
+      }
+      panel.style.maxHeight = maxH + 'px';
     }
 
     fab.addEventListener('pointerdown', (e) => {
