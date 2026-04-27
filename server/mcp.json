@@ -27,18 +27,5 @@
       }
     }
   },
-  "mcpServers": {
-    "exa_search-mcp": {
-      "type": "http",
-      "url": "https://mcp.exa.ai/mcp?exaApiKey=88ffe96a-22c2-4eb5-8da9-b01e0d2a58d0&tools=web_search_exa,web_search_advanced_exa,crawling_exa,company_research_exa,deep_researcher_start,deep_researcher_check,deep_search_exa"
-    },
-    "context7": {
-      "args": [
-        "-y",
-        "@upstash/context7-mcp"
-      ],
-      "command": "npx",
-      "type": "stdio"
-    }
-  }
+  "mcpServers": {}
 }

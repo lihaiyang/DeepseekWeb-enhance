@@ -2,7 +2,7 @@
 // @name         DS Enhance
 // @namespace    https://github.com/calendar0917/ds-enhance
 // @version      5.0.0
-// @description  AI Chat 增强 — 对话管理 + MCP 工具调用 + TTS 朗读 + 多站点适配
+// @description  AI Chat 增强 — 对话管理 + MCP 工具调用 + 多站点适配
 // @author       ds-enhance
 // @match        https://chat.deepseek.com/*
 // @match        https://chat.openai.com/*
@@ -33,7 +33,7 @@
   // ═══════════════════════════════════════════════════════════════════
   //  Module Toggles (top-level so XHR/fetch hooks can access)
   // ═══════════════════════════════════════════════════════════════════
-  const MODULE_DEFAULTS = { mcp: true, tts: true, ttsAutoPlay: false };
+  const MODULE_DEFAULTS = { mcp: true };
   function getModuleEnabled(mod) { return GM_getValue('mod_' + mod, MODULE_DEFAULTS[mod]); }
   function setModuleEnabled(mod, val) { GM_setValue('mod_' + mod, val); }
 
@@ -163,87 +163,6 @@
       } catch { return false; }
     }
   }
-
-  // ═══════════════════════════════════════════════════════════════════
-  //  TTS Client — Text-to-Speech via server API
-  // ═══════════════════════════════════════════════════════════════════
-  class TTSClient {
-    constructor() {
-      this.audio = null;
-      this.playing = false;
-      this.currentText = '';
-    }
-
-    getBaseUrl() {
-      const mcpUrl = GM_getValue('mcp_url', DEFAULT_MCP_URL);
-      try { return new URL(mcpUrl).origin; }
-      catch { return mcpUrl.replace(/\/[^/]*$/, ''); }
-    }
-
-    async synthesize(text) {
-      const voice = GM_getValue('tts_voice', 'zh-CN-XiaoxiaoNeural');
-      const provider = GM_getValue('tts_provider', 'edge');
-      const body = { text, voice, provider };
-      if (provider === 'openai') {
-        body.api_key = GM_getValue('tts_api_key', '');
-        body.base_url = GM_getValue('tts_base_url', 'https://api.openai.com/v1');
-        body.model = GM_getValue('tts_model', 'tts-1');
-      }
-      const url = this.getBaseUrl() + '/api/tts';
-      return new Promise((resolve, reject) => {
-        GM_xmlhttpRequest({
-          method: 'POST', url,
-          headers: { 'Content-Type': 'application/json', 'Accept': 'audio/mpeg' },
-          data: JSON.stringify(body),
-          responseType: 'blob',
-          onload: (resp) => {
-            if (resp.status !== 200) {
-              try { const err = JSON.parse(resp.responseText); reject(new Error(err.error || 'TTS failed')); }
-              catch { reject(new Error('TTS HTTP ' + resp.status)); }
-              return;
-            }
-            resolve(URL.createObjectURL(resp.response));
-          },
-          onerror: () => reject(new Error('TTS 网络错误')),
-          ontimeout: () => reject(new Error('TTS 超时')),
-          timeout: 60000,
-        });
-      });
-    }
-
-    async play(text) {
-      this.stop();
-      this.currentText = text;
-      try {
-        const audioUrl = await this.synthesize(text);
-        this.audio = new Audio(audioUrl);
-        this.playing = true;
-        this.audio.onended = () => { this.playing = false; };
-        await this.audio.play();
-      } catch (e) {
-        console.warn(`${SCRIPT_PREFIX} TTS server failed, falling back to Web Speech:`, e.message);
-        this._fallbackPlay(text);
-      }
-    }
-
-    _fallbackPlay(text) {
-      if (!('speechSynthesis' in window)) return;
-      window.speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = 'zh-CN';
-      u.rate = 1.0;
-      this.playing = true;
-      u.onend = () => { this.playing = false; };
-      window.speechSynthesis.speak(u);
-    }
-
-    stop() {
-      if (this.audio) { this.audio.pause(); this.audio.currentTime = 0; this.audio = null; this.playing = false; }
-      if (window.speechSynthesis) { window.speechSynthesis.cancel(); this.playing = false; }
-    }
-  }
-
-  const ttsClient = new TTSClient();
 
   // ═══════════════════════════════════════════════════════════════════
   //  Tool Registry & Hint Builder
@@ -929,18 +848,6 @@
     .ext-add-toggle:hover{text-decoration:underline}
     .ext-section{margin-top:10px;padding-top:10px;border-top:1px solid #2a2a3a}
 
-    /* TTS Button */
-    .dse-tts-btn {
-      display:inline-flex;align-items:center;gap:4px;
-      padding:3px 8px;border-radius:6px;border:1px solid #444;
-      background:#1a1a28;color:#ccc;font-size:11px;cursor:pointer;
-      transition:background .15s,border-color .15s;user-select:none;
-      margin-left:8px;vertical-align:middle;
-    }
-    .dse-tts-btn:hover { background:#2a2a3e;border-color:#7aa2f7;color:#7aa2f7; }
-    .dse-tts-btn.playing { background:#1a3a28;border-color:#16a34a;color:#4ade80; }
-    .dse-tts-btn.paused { background:#3a2a18;border-color:#d97706;color:#fbbf24; }
-
     /* Module toggles */
     .dse-toggle-row { display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #2a2a3a; }
     .dse-toggle-label { font-size:13px;color:#ccc; }
@@ -1122,51 +1029,6 @@
           <div class="dse-toggle-row">
             <div><div class="dse-toggle-label">🔧 MCP 工具调用</div><div class="dse-toggle-desc">拦截 AI 回复并执行本地工具</div></div>
             <label class="dse-switch"><input type="checkbox" id="mod-toggle-mcp" ${getModuleEnabled('mcp') ? 'checked' : ''} /><span class="slider"></span></label>
-          </div>
-          <div class="dse-toggle-row">
-            <div><div class="dse-toggle-label">🔊 TTS 朗读</div><div class="dse-toggle-desc">AI 回复旁显示朗读按钮</div></div>
-            <label class="dse-switch"><input type="checkbox" id="mod-toggle-tts" ${getModuleEnabled('tts') ? 'checked' : ''} /><span class="slider"></span></label>
-          </div>
-          <div class="dse-toggle-row">
-            <div><div class="dse-toggle-label">🔊 自动朗读</div><div class="dse-toggle-desc">AI 回复完成后自动 TTS 播放</div></div>
-            <label class="dse-switch"><input type="checkbox" id="mod-toggle-ttsAutoPlay" ${getModuleEnabled('ttsAutoPlay') ? 'checked' : ''} /><span class="slider"></span></label>
-          </div>
-        </div>
-        <div style="margin-top:16px">
-          <label class="dse-label">TTS 设置</label>
-          <div class="dse-toggle-row">
-            <div><div class="dse-toggle-label">引擎</div></div>
-            <select class="dse-sel" id="tts-provider" style="width:auto">
-              <option value="edge" ${GM_getValue('tts_provider', 'edge') === 'edge' ? 'selected' : ''}>Edge TTS (免费)</option>
-              <option value="openai" ${GM_getValue('tts_provider', 'edge') === 'openai' ? 'selected' : ''}>OpenAI 兼容</option>
-            </select>
-          </div>
-          <div style="margin-top:8px">
-            <label class="dse-label">语音</label>
-            <div style="display:flex;gap:6px;margin-bottom:6px">
-              <select class="dse-sel" id="tts-voice-filter-locale" style="width:auto;font-size:11px">
-                <option value="">全部语言</option>
-                <option value="zh-">中文</option>
-                <option value="en-">英语</option>
-                <option value="ja-">日语</option>
-                <option value="ko-">韩语</option>
-              </select>
-              <select class="dse-sel" id="tts-voice-filter-gender" style="width:auto;font-size:11px">
-                <option value="">全部性别</option>
-                <option value="Female">女声</option>
-                <option value="Male">男声</option>
-              </select>
-            </div>
-            <select class="dse-sel" id="tts-voice" style="width:100%">
-              <option value="${GM_getValue('tts_voice', 'zh-CN-XiaoxiaoNeural')}">加载中...</option>
-            </select>
-            <div id="tts-voice-status" style="font-size:10px;color:#666;margin-top:4px"></div>
-          </div>
-          <div id="tts-adv" style="display:${GM_getValue('tts_provider', 'edge') !== 'edge' ? 'block' : 'none'};margin-top:8px;padding:8px;background:#1a1a28;border-radius:8px;border:1px solid #333">
-            <div style="font-size:11px;color:#888;margin-bottom:6px">OpenAI 兼容配置</div>
-            <div style="margin-bottom:6px"><label class="dse-label">API Key</label><input class="dse-input" id="tts-apikey" type="password" value="${GM_getValue('tts_api_key', '')}" placeholder="sk-..." style="font-size:12px" /></div>
-            <div style="margin-bottom:6px"><label class="dse-label">Base URL</label><input class="dse-input" id="tts-baseurl" value="${GM_getValue('tts_base_url', 'https://api.openai.com/v1')}" style="font-size:12px" /></div>
-            <div><label class="dse-label">模型</label><input class="dse-input" id="tts-model" value="${GM_getValue('tts_model', 'tts-1')}" placeholder="tts-1 / tts-1-hd" style="font-size:12px" /></div>
           </div>
         </div>
         <div style="margin-top:8px;font-size:11px;color:#555">适配器: ${currentAdapter ? currentAdapter.name : '无'}</div>
@@ -2295,7 +2157,7 @@
   const cfgSave = panel.querySelector('#cfg-save');
 
   // Module toggles
-  ['mcp', 'tts', 'ttsAutoPlay'].forEach(mod => {
+  ['mcp'].forEach(mod => {
     const toggle = panel.querySelector(`#mod-toggle-${mod}`);
     if (toggle) {
       toggle.onchange = () => {
@@ -2305,206 +2167,16 @@
     }
   });
 
-  // TTS provider toggle
-  const ttsProvider = panel.querySelector('#tts-provider');
-  const ttsAdv = panel.querySelector('#tts-adv');
-  if (ttsProvider) {
-    ttsProvider.onchange = () => {
-      ttsAdv.style.display = ttsProvider.value !== 'edge' ? 'block' : 'none';
-    };
-  }
-
-  // TTS voice loading
-  let allVoices = [];
-  async function loadTTSVoices() {
-    const voiceSelect = panel.querySelector('#tts-voice');
-    const voiceStatus = panel.querySelector('#tts-voice-status');
-    const localeFilter = panel.querySelector('#tts-voice-filter-locale');
-    const genderFilter = panel.querySelector('#tts-voice-filter-gender');
-    if (!voiceSelect) return;
-
-    try {
-      const mcpUrl = GM_getValue('mcp_url', DEFAULT_MCP_URL);
-      const baseUrl = (() => { try { return new URL(mcpUrl).origin; } catch { return mcpUrl.replace(/\/[^/]*$/, ''); } })();
-      const resp = await new Promise((resolve, reject) => {
-        GM_xmlhttpRequest({
-          method: 'GET', url: baseUrl + '/api/tts/voices',
-          onload: (r) => { try { resolve(JSON.parse(r.responseText)); } catch { reject(new Error('Invalid JSON')); } },
-          onerror: () => reject(new Error('Network error')),
-          timeout: 10000,
-        });
-      });
-
-      allVoices = resp.voices || [];
-      if (voiceStatus) voiceStatus.textContent = `已加载 ${allVoices.length} 个语音`;
-
-      function renderVoices() {
-        const locale = localeFilter?.value || '';
-        const gender = genderFilter?.value || '';
-        let filtered = allVoices;
-        if (locale) filtered = filtered.filter(v => v.ShortName?.startsWith(locale));
-        if (gender) filtered = filtered.filter(v => v.Gender === gender);
-
-        voiceSelect.innerHTML = '';
-        if (!filtered.length) {
-          voiceSelect.innerHTML = '<option value="">无匹配语音</option>';
-          return;
-        }
-        filtered.forEach(v => {
-          const opt = document.createElement('option');
-          opt.value = v.ShortName;
-          opt.textContent = `${v.ShortName} (${v.Gender}, ${v.Locale})`;
-          voiceSelect.appendChild(opt);
-        });
-
-        // Set current value
-        const current = GM_getValue('tts_voice', 'zh-CN-XiaoxiaoNeural');
-        if (voiceSelect.querySelector(`option[value="${current}"]`)) {
-          voiceSelect.value = current;
-        }
-      }
-
-      renderVoices();
-      if (localeFilter) localeFilter.onchange = renderVoices;
-      if (genderFilter) genderFilter.onchange = renderVoices;
-      voiceSelect.onchange = () => { GM_setValue('tts_voice', voiceSelect.value); };
-
-    } catch (e) {
-      if (voiceStatus) voiceStatus.textContent = `语音列表加载失败: ${e.message}`;
-      if (voiceSelect) voiceSelect.innerHTML = '<option value="zh-CN-XiaoxiaoNeural">zh-CN-XiaoxiaoNeural (默认)</option>';
-    }
-  }
-
   // Save settings
   cfgSave.onclick = () => {
     GM_setValue('mcp_url', cfgUrl.value.trim() || DEFAULT_MCP_URL);
-    GM_setValue('tts_provider', ttsProvider?.value || 'edge');
-    GM_setValue('tts_api_key', panel.querySelector('#tts-apikey')?.value || '');
-    GM_setValue('tts_base_url', panel.querySelector('#tts-baseurl')?.value || 'https://api.openai.com/v1');
-    GM_setValue('tts_model', panel.querySelector('#tts-model')?.value || 'tts-1');
     toast('设置已保存', 'success');
     refreshMCPStatus();
   };
 
   // ═══════════════════════════════════════════════════════════════════
-  //  TTS Button Injection — adds 🔊 button to each assistant message
-  // ═══════════════════════════════════════════════════════════════════
-  function injectTTSButtons() {
-    if (!getModuleEnabled('tts')) return;
-
-    const adapter = currentAdapter;
-    if (!adapter) return;
-
-    const msgSelector = adapter.selectors.assistantMessages;
-    if (!msgSelector) return;
-
-    document.querySelectorAll(msgSelector).forEach(msgEl => {
-      // Skip if already processed
-      if (msgEl.dataset.dseTts) return;
-      msgEl.dataset.dseTts = '1';
-
-      // Find a good place to insert the button
-      const btn = document.createElement('button');
-      btn.className = 'dse-tts-btn';
-      btn.innerHTML = '🔊 朗读';
-      btn.onclick = async (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-
-        const text = msgEl.textContent || '';
-        if (!text.trim()) return;
-
-        if (ttsClient.playing && ttsClient.currentText === text) {
-          ttsClient.stop();
-          btn.innerHTML = '🔊 朗读';
-          btn.className = 'dse-tts-btn';
-          return;
-        }
-
-        btn.innerHTML = '⏳ 生成中...';
-        btn.className = 'dse-tts-btn playing';
-
-        try {
-          await ttsClient.play(text);
-          btn.innerHTML = '⏹ 停止';
-          btn.className = 'dse-tts-btn playing';
-
-          // Update button when playback ends
-          const checkEnd = setInterval(() => {
-            if (!ttsClient.playing) {
-              btn.innerHTML = '🔊 朗读';
-              btn.className = 'dse-tts-btn';
-              clearInterval(checkEnd);
-            }
-          }, 500);
-        } catch (e) {
-          btn.innerHTML = '🔊 朗读';
-          btn.className = 'dse-tts-btn';
-          toast(`TTS 错误: ${e.message}`, 'error');
-        }
-      };
-
-      // Insert button near the message
-      msgEl.style.position = 'relative';
-      const wrapper = document.createElement('div');
-      wrapper.style.cssText = 'display:flex;justify-content:flex-end;margin-top:4px;';
-      wrapper.appendChild(btn);
-      msgEl.appendChild(wrapper);
-    });
-  }
-
-  // Periodically inject TTS buttons (for dynamically loaded messages)
-  setInterval(injectTTSButtons, 3000);
-  setTimeout(injectTTSButtons, 2000);
-
-  // Auto-play TTS when a new assistant message appears
-  if (getModuleEnabled('ttsAutoPlay')) {
-    const observedTexts = new Set();
-
-    function checkForNewMessages() {
-      if (!getModuleEnabled('ttsAutoPlay')) return;
-      const adapter = currentAdapter;
-      if (!adapter) return;
-      const msgSelector = adapter.selectors.assistantMessages;
-      if (!msgSelector) return;
-
-      document.querySelectorAll(msgSelector).forEach(msgEl => {
-        const text = msgEl.textContent || '';
-        if (!text.trim()) return;
-
-        // Simple heuristic: if we haven't seen this text before and it's long enough
-        const key = text.substring(0, 100);
-        if (observedTexts.has(key)) return;
-
-        // Wait a bit to see if the message is still being generated
-        setTimeout(() => {
-          const currentText = msgEl.textContent || '';
-          const currentKey = currentText.substring(0, 100);
-          if (currentKey !== key) return; // Still changing
-          observedTexts.add(currentKey);
-
-          // Only auto-play if the message seems complete (not being streamed)
-          if (currentText.length > 50 && !msgEl.querySelector('.cursor')) {
-            ttsClient.play(currentText);
-          }
-        }, 2000);
-      });
-
-      // Clean up old entries to prevent memory leak
-      if (observedTexts.size > 200) {
-        const entries = [...observedTexts];
-        entries.slice(0, 100).forEach(e => observedTexts.delete(e));
-      }
-    }
-
-    setInterval(checkForNewMessages, 5000);
-  }
-
-  // ═══════════════════════════════════════════════════════════════════
   //  Initialization
   // ═══════════════════════════════════════════════════════════════════
-  loadTTSVoices();
-
   console.log(`${SCRIPT_PREFIX} DS Enhance v${VERSION} loaded — adapter: ${currentAdapter?.name || 'none'}`);
 
   }); // end waitForDOM
