@@ -1,0 +1,74 @@
+{
+  "name": "ds-agent",
+  "version": "1.0.0",
+  "description": "DS Agent — Web-First AI Agent powered by DeepSeek Chat (no API key required)",
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "ELECTRON_RUN_AS_NODE= electron .",
+    "dev": "ELECTRON_RUN_AS_NODE= electron . --dev",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux",
+    "build": "electron-builder"
+  },
+  "author": "ds-enhance",
+  "license": "GPL-3.0",
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "cors": "^2.8.5",
+    "multer": "^1.4.5-lts.2",
+    "cheerio": "^1.0.0",
+    "uuid": "^11.1.0"
+  },
+  "build": {
+    "appId": "com.ds-enhance.agent",
+    "productName": "DS Agent",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "server/**/*",
+      "assets/**/*"
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["universal"]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "assets/icon.icns"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        }
+      ],
+      "category": "Utility",
+      "icon": "assets/icon.png"
+    },
+    "extraResources": [
+      {
+        "from": "server",
+        "to": "server"
+      }
+    ]
+  }
+}

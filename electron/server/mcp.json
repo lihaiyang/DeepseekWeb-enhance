@@ -1,0 +1,32 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8024
+  },
+  "services": {
+    "shell": {
+      "type": "builtin",
+      "tools": ["execute_command", "get_cwd", "list_directory", "read_file", "write_file", "edit_file", "search_in_files"]
+    },
+    "web_search": {
+      "type": "builtin",
+      "tools": ["bing_search", "crawl_webpage"],
+      "config": {
+        "bing_api_key": ""
+      }
+    },
+    "tts": {
+      "type": "builtin",
+      "tools": ["tts_synthesize"],
+      "config": {
+        "provider": "edge",
+        "voice": "zh-CN-XiaoxiaoNeural"
+      }
+    },
+    "file_processor": {
+      "type": "builtin",
+      "tools": ["process_file"]
+    }
+  },
+  "mcpServers": {}
+}
