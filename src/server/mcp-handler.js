@@ -19,8 +19,8 @@ const os = require('os');
 
 const _configSearchPaths = [
   path.join(os.homedir(), '.ds-agent', 'mcp.json'),                     // ~/.ds-agent/mcp.json (user config)
-  path.join(__dirname, '..', '..', '..', 'server', 'mcp.json'),         // project root server/mcp.json (dev)
-  path.join(process.resourcesPath || '', 'server', 'mcp.json'),         // packaged app resources
+  path.join(__dirname, '..', '..', 'mcp.json'),                          // project root mcp.json (dev)
+  path.join(process.resourcesPath || '', 'mcp.json'),                    // packaged app resources
 ];
 
 let serviceConfig = {};

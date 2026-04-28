@@ -9,10 +9,15 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Node (just in case)
+# Node
 node_modules/
 
-# Python
+# Build output
+dist/
+out/
+*.log
+
+# Python (legacy)
 __pycache__/
 *.pyc
 *.pyo

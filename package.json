@@ -9,7 +9,9 @@
     "build:mac": "electron-builder --mac",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux",
-    "build": "electron-builder"
+    "build": "electron-builder",
+    "generate-icons": "ELECTRON_RUN_AS_NODE= electron scripts/icon-gen.js",
+    "dist": "node scripts/build.js"
   },
   "author": "ds-enhance",
   "license": "GPL-3.0",
@@ -46,6 +48,13 @@
         }
       ],
       "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "DS Agent"
     },
     "linux": {
       "target": [
