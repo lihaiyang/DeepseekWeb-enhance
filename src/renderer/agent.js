@@ -21,7 +21,7 @@
   const PREFIX = '[DS Agent]';
   const VERSION = '1.0.0';
   const TOOL_CALL_RE = /```mcp:(\w+)\n([\s\S]*?)```/g;
-  const MAX_AGENT_LOOPS = 10;
+  const MAX_AGENT_LOOPS = 50;
 
   // ─── State ──────────────────────────────────────────────────
   let toolRegistry = [];
@@ -34,6 +34,7 @@
 
   // ─── UI: Floating Panel ────────────────────────────────────
   let panel = null;
+  let fabButton = null;
 
   function createPanel() {
     if (document.getElementById('ds-agent-panel')) return;
@@ -46,7 +47,7 @@
         <div id="ds-agent-header-actions">
           <button id="ds-agent-stop" title="停止 Agent" style="display:none">⏹</button>
           <button id="ds-agent-toggle-panel" title="控制面板">⚙️</button>
-          <button id="ds-agent-close" title="关闭">✕</button>
+          <button id="ds-agent-minimize" title="最小化">─</button>
         </div>
       </div>
       <div id="ds-agent-body">
@@ -71,13 +72,14 @@
     const style = document.createElement('style');
     style.textContent = `
       #ds-agent-panel {
-        position: fixed; bottom: 20px; left: 20px; z-index: 99999;
+        position: fixed; bottom: 20px; right: 20px; z-index: 99999;
         width: 360px; max-height: 500px;
         background: #1e1e2e; color: #cdd6f4; border-radius: 12px;
         box-shadow: 0 8px 32px rgba(0,0,0,0.4); font-family: -apple-system, sans-serif;
         font-size: 13px; overflow: hidden; transition: all 0.3s ease;
       }
       #ds-agent-panel.hidden { transform: translateY(calc(100% - 40px)); }
+      #ds-agent-panel.closed { display: none; }
       #ds-agent-header {
         display: flex; justify-content: space-between; align-items: center;
         padding: 8px 12px; background: #313244; cursor: pointer;
@@ -107,12 +109,30 @@
       .ds-agent-step.thinking { border-left: 3px solid #f9e2af; }
       .ds-agent-step .step-label { font-weight: 600; margin-bottom: 2px; }
       .ds-agent-step .step-content { color: #a6adc8; word-break: break-all; }
+      #ds-agent-fab {
+        position: fixed; bottom: 20px; right: 20px; z-index: 99998;
+        width: 44px; height: 44px; border-radius: 50%;
+        background: #313244; color: #cdd6f4; border: none; cursor: pointer;
+        font-size: 20px; box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+        display: none; transition: all 0.2s ease;
+      }
+      #ds-agent-fab:hover { background: #45475a; transform: scale(1.1); }
     `;
+    // Create FAB (floating action button) to reopen panel after close
+    fabButton = document.createElement('button');
+    fabButton.id = 'ds-agent-fab';
+    fabButton.textContent = '🤖';
+    fabButton.title = '打开 DS Agent';
+    fabButton.addEventListener('click', () => {
+      showPanel();
+    });
+
     document.head.appendChild(style);
     document.body.appendChild(panel);
+    document.body.appendChild(fabButton);
 
-    document.getElementById('ds-agent-close').addEventListener('click', () => {
-      panel.style.display = 'none';
+    document.getElementById('ds-agent-minimize').addEventListener('click', () => {
+      hidePanel();
     });
     document.getElementById('ds-agent-toggle-panel').addEventListener('click', () => {
       window.dsAgent?.openControlPanel();
@@ -124,6 +144,21 @@
       if (e.target.closest('button')) return;
       panel.classList.toggle('hidden');
     });
+  }
+
+  function showPanel() {
+    if (panel) {
+      panel.classList.remove('closed', 'hidden');
+      panel.style.display = '';
+    }
+    if (fabButton) fabButton.style.display = 'none';
+  }
+
+  function hidePanel() {
+    if (panel) {
+      panel.classList.add('closed');
+    }
+    if (fabButton) fabButton.style.display = 'block';
   }
 
   function updateStatus(elementId, text) {
@@ -441,8 +476,10 @@
     document.addEventListener('keydown', (e) => {
       if (e.ctrlKey && e.shiftKey && e.key === 'A') {
         e.preventDefault();
-        if (panel) {
-          panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+        if (panel && !panel.classList.contains('closed')) {
+          hidePanel();
+        } else {
+          showPanel();
         }
       }
       if (e.ctrlKey && e.shiftKey && e.key === 'S') {

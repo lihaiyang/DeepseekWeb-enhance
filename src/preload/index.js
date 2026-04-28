@@ -44,6 +44,11 @@ contextBridge.exposeInMainWorld('dsAgent', {
   getConfig: (key) => ipcRenderer.invoke('config:get', key),
   setConfig: (key, value) => ipcRenderer.invoke('config:set', key, value),
 
+  // Workspace
+  getWorkspace: () => ipcRenderer.invoke('workspace:get'),
+  setWorkspace: (path) => ipcRenderer.invoke('workspace:set', path),
+  selectFolder: () => ipcRenderer.invoke('workspace:select-folder'),
+
   // Events
   onToolResult: (callback) => {
     ipcRenderer.on('mcp:tool-result', (_event, result) => callback(result));

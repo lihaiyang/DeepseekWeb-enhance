@@ -8,16 +8,19 @@
 
 const path = require('path');
 const fs = require('fs');
-const { TOOL_DEFINITIONS: SHELL_TOOLS, HANDLERS: SHELL_HANDLERS } = require('./tools/shell');
-const { TOOL_DEFINITIONS: SEARCH_TOOLS, HANDLERS: SEARCH_HANDLERS } = require('./tools/search');
-const { TOOL_DEFINITIONS: TTS_TOOLS, HANDLERS: TTS_HANDLERS } = require('./tools/tts');
+const { TOOL_DEFINITIONS: SHELL_TOOLS, HANDLERS: SHELL_HANDLERS, getWorkspace, setWorkspace } = require('./tools/shell');
 const { TOOL_DEFINITIONS: FILE_TOOLS, HANDLERS: FILE_HANDLERS } = require('./tools/file-processor');
 
 // ─── Load Service Config ─────────────────────────────────────
-// Try to load mcp.json from the project root (for config like API keys)
+// Try to load mcp.json for service config (API keys, etc.)
+// Tool filtering is NO LONGER based on mcp.json — all tools are enabled by default.
+// mcp.json is only used for injecting config (e.g., API keys) into tool calls.
+const os = require('os');
+
 const _configSearchPaths = [
-  path.join(__dirname, '..', '..', '..', 'server', 'mcp.json'),  // project root server/mcp.json
-  path.join(process.cwd(), 'server', 'mcp.json'),                // cwd/server/mcp.json
+  path.join(os.homedir(), '.ds-agent', 'mcp.json'),                     // ~/.ds-agent/mcp.json (user config)
+  path.join(__dirname, '..', '..', '..', 'server', 'mcp.json'),         // project root server/mcp.json (dev)
+  path.join(process.resourcesPath || '', 'server', 'mcp.json'),         // packaged app resources
 ];
 
 let serviceConfig = {};
@@ -49,21 +52,9 @@ for (const [svcName, svc] of Object.entries(serviceConfig)) {
 // ─── Aggregate Tool Definitions ───────────────────────────────
 const ALL_TOOLS = {};
 
-// Tool filtering: if config specifies tools, only enable those; otherwise enable all
-const enabledTools = new Set();
-for (const svc of Object.values(serviceConfig)) {
-  if (svc.type === 'builtin' && Array.isArray(svc.tools)) {
-    for (const tool of svc.tools) {
-      enabledTools.add(tool);
-    }
-  }
-}
-const filterEnabled = enabledTools.size > 0;
-
-for (const toolDef of [...SHELL_TOOLS, ...SEARCH_TOOLS, ...TTS_TOOLS, ...FILE_TOOLS]) {
-  if (!filterEnabled || enabledTools.has(toolDef.name)) {
-    ALL_TOOLS[toolDef.name] = toolDef;
-  }
+// All tools are enabled by default. mcp.json is only used for config injection.
+for (const toolDef of [...SHELL_TOOLS, ...FILE_TOOLS]) {
+  ALL_TOOLS[toolDef.name] = toolDef;
 }
 
 console.log(`[MCP Handler] Enabled tools: ${Object.keys(ALL_TOOLS).sort().join(', ')}`);
@@ -78,8 +69,6 @@ const SYNC_HANDLERS = {
 // Async handlers return Promises
 const ASYNC_HANDLERS = {
   ...SHELL_HANDLERS.async || {},
-  ...SEARCH_HANDLERS.async || {},
-  ...TTS_HANDLERS.async || {},
 };
 
 // ─── Public API ──────────────────────────────────────────────
@@ -127,4 +116,6 @@ module.exports = {
   ASYNC_HANDLERS,
   getToolList,
   handleToolCall,
+  getWorkspace,
+  setWorkspace,
 };

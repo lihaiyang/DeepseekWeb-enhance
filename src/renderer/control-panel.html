@@ -121,6 +121,10 @@
         <div class="value" id="cp-site">-</div>
       </div>
     </div>
+    <div class="status-card" style="margin-top: 10px;">
+      <div class="label">工作目录</div>
+      <div class="value" id="cp-workspace-status" style="font-size: 13px; word-break: break-all; color: #89b4fa;">-</div>
+    </div>
     <div style="margin-top: 16px; text-align: center;">
       <button class="btn btn-primary" id="cp-refresh">🔄 刷新状态</button>
     </div>
@@ -140,6 +144,14 @@
   <!-- Settings Tab -->
   <div class="tab-content" id="tab-settings">
     <div class="setting-group">
+      <label>工作目录</label>
+      <div style="display: flex; gap: 6px;">
+        <input type="text" id="cp-workspace" readonly style="flex: 1; cursor: default;" />
+        <button class="btn btn-primary" id="cp-select-folder" style="white-space: nowrap;">📁 选择</button>
+      </div>
+      <div style="color: #a6adc8; font-size: 11px; margin-top: 4px;">Agent 执行命令和文件操作的根目录</div>
+    </div>
+    <div class="setting-group">
       <label>聊天站点</label>
       <select id="cp-site-select">
         <option value="https://chat.deepseek.com">DeepSeek</option>
@@ -148,7 +160,7 @@
     </div>
     <div class="setting-group">
       <label>Agent 最大循环步数</label>
-      <input type="number" id="cp-max-steps" value="10" min="1" max="50" />
+      <input type="number" id="cp-max-steps" value="50" min="1" max="100" />
     </div>
     <div class="setting-group" style="display: flex; justify-content: space-between; align-items: center;">
       <label style="margin-bottom: 0;">工具调用前确认</label>
@@ -163,7 +175,10 @@
   </div>
 
   <script>
-    const dsAgent = window.dsAgent;
+    // Wait for dsAgent API to be available (contextBridge may not be ready immediately)
+    function getDsAgent() {
+      return window.dsAgent || null;
+    }
 
     // Tab switching
     document.querySelectorAll('.tab').forEach(tab => {
@@ -177,12 +192,20 @@
 
     // Refresh status
     async function refreshStatus() {
+      const dsAgent = getDsAgent();
+      if (!dsAgent) {
+        document.getElementById('cp-conn').textContent = '❌ API 不可用';
+        document.getElementById('cp-conn').className = 'value err';
+        return;
+      }
+
       try {
         const health = await dsAgent.health();
         document.getElementById('cp-conn').textContent = health.success ? '✅ 已就绪' : '❌ 未就绪';
         document.getElementById('cp-conn').className = 'value ' + (health.success ? 'ok' : 'err');
-        document.getElementById('cp-tools').textContent = health.tools || 0;
-      } catch {
+        document.getElementById('cp-tools').textContent = health.tools != null ? health.tools : 0;
+      } catch (err) {
+        console.error('[Control Panel] refreshStatus error:', err);
         document.getElementById('cp-conn').textContent = '❌ 未就绪';
         document.getElementById('cp-conn').className = 'value err';
       }
@@ -193,50 +216,159 @@
       } catch {
         document.getElementById('cp-site').textContent = '-';
       }
+
+      try {
+        const workspace = await dsAgent.getWorkspace();
+        document.getElementById('cp-workspace-status').textContent = workspace || '-';
+      } catch {
+        document.getElementById('cp-workspace-status').textContent = '-';
+      }
     }
 
     // Refresh tools
     async function refreshTools() {
+      const dsAgent = getDsAgent();
+      if (!dsAgent) {
+        document.getElementById('cp-tool-list').innerHTML = '<li style="color: #f38ba8;">API 不可用</li>';
+        return;
+      }
+
       try {
         const result = await dsAgent.listTools();
         const list = document.getElementById('cp-tool-list');
-        if (result.success && result.data) {
-          list.innerHTML = result.data.map(t => `
-            <li class="tool-item">
-              <div class="tool-name">${t.name}</div>
-              <div class="tool-desc">${t.description || ''}</div>
-            </li>
-          `).join('');
+        if (result.success && result.data && result.data.length > 0) {
+          list.innerHTML = result.data.map(t =>
+            '<li class="tool-item">' +
+              '<div class="tool-name">' + escapeHtml(t.name) + '</div>' +
+              '<div class="tool-desc">' + escapeHtml(t.description || '') + '</div>' +
+            '</li>'
+          ).join('');
+        } else if (result.success && result.data && result.data.length === 0) {
+          list.innerHTML = '<li style="color: #a6adc8;">无可用工具</li>';
         } else {
-          list.innerHTML = '<li style="color: #f38ba8;">加载失败</li>';
+          list.innerHTML = '<li style="color: #f38ba8;">加载失败: ' + escapeHtml(result.error || '未知错误') + '</li>';
         }
-      } catch {
-        document.getElementById('cp-tool-list').innerHTML = '<li style="color: #f38ba8;">加载失败</li>';
+      } catch (err) {
+        console.error('[Control Panel] refreshTools error:', err);
+        document.getElementById('cp-tool-list').innerHTML = '<li style="color: #f38ba8;">加载失败: ' + escapeHtml(err.message || '') + '</li>';
       }
     }
 
+    // Select folder button
+    document.getElementById('cp-select-folder').addEventListener('click', async () => {
+      const dsAgent = getDsAgent();
+      if (!dsAgent) {
+        alert('API 不可用');
+        return;
+      }
+      try {
+        const result = await dsAgent.selectFolder();
+        if (result) {
+          document.getElementById('cp-workspace').value = result;
+          document.getElementById('cp-workspace-status').textContent = result;
+        }
+      } catch (err) {
+        alert('选择目录失败: ' + (err.message || '未知错误'));
+      }
+    });
+
     // Save settings
     document.getElementById('cp-save-settings').addEventListener('click', async () => {
+      const dsAgent = getDsAgent();
+      if (!dsAgent) {
+        alert('API 不可用，无法保存设置');
+        return;
+      }
+
       const siteSelect = document.getElementById('cp-site-select').value;
       const maxSteps = document.getElementById('cp-max-steps').value;
       const confirmTools = document.getElementById('cp-confirm-tools').checked;
 
-      await dsAgent.setConfig('max_steps', parseInt(maxSteps));
-      await dsAgent.setConfig('confirm_tools', confirmTools);
+      try {
+        await dsAgent.setConfig('max_steps', parseInt(maxSteps));
+        await dsAgent.setConfig('confirm_tools', confirmTools);
 
-      // Navigate to selected site
-      await dsAgent.goto(siteSelect);
+        // Navigate to selected site
+        await dsAgent.goto(siteSelect);
 
-      alert('设置已保存');
+        alert('设置已保存');
+      } catch (err) {
+        console.error('[Control Panel] save settings error:', err);
+        alert('保存设置失败: ' + (err.message || '未知错误'));
+      }
     });
+
+    // HTML escape helper
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
 
     // Event listeners
     document.getElementById('cp-refresh').addEventListener('click', refreshStatus);
     document.getElementById('cp-refresh-tools').addEventListener('click', refreshTools);
 
-    // Initial load
-    refreshStatus();
-    refreshTools();
+    // Initial load — wait for dsAgent to be ready
+    async function initPanel() {
+      const dsAgent = getDsAgent();
+      if (dsAgent) {
+        try {
+          // Load workspace
+          const workspace = await dsAgent.getWorkspace();
+          if (workspace) {
+            document.getElementById('cp-workspace').value = workspace;
+          }
+
+          // Load saved settings
+          const savedSteps = await dsAgent.getConfig('max_steps');
+          if (savedSteps != null) {
+            document.getElementById('cp-max-steps').value = savedSteps;
+          }
+          const savedConfirm = await dsAgent.getConfig('confirm_tools');
+          if (savedConfirm != null) {
+            document.getElementById('cp-confirm-tools').checked = savedConfirm;
+          }
+        } catch (err) {
+          console.error('[Control Panel] load settings error:', err);
+        }
+
+        refreshStatus();
+        refreshTools();
+      } else {
+        // Retry a few times — contextBridge should be very fast but just in case
+        let retries = 0;
+        const retryInterval = setInterval(() => {
+          retries++;
+          const agent = getDsAgent();
+          if (agent) {
+            clearInterval(retryInterval);
+            // Load workspace and settings
+            agent.getWorkspace().then(ws => {
+              if (ws) {
+                document.getElementById('cp-workspace').value = ws;
+                document.getElementById('cp-workspace-status').textContent = ws;
+              }
+            }).catch(() => {});
+            agent.getConfig('max_steps').then(v => {
+              if (v != null) document.getElementById('cp-max-steps').value = v;
+            }).catch(() => {});
+            agent.getConfig('confirm_tools').then(v => {
+              if (v != null) document.getElementById('cp-confirm-tools').checked = v;
+            }).catch(() => {});
+            refreshStatus();
+            refreshTools();
+          } else if (retries > 20) {
+            clearInterval(retryInterval);
+            document.getElementById('cp-conn').textContent = '❌ API 不可用';
+            document.getElementById('cp-conn').className = 'value err';
+            document.getElementById('cp-tool-list').innerHTML = '<li style="color: #f38ba8;">无法连接到主进程</li>';
+          }
+        }, 200);
+      }
+    }
+
+    initPanel();
   </script>
 </body>
 </html>

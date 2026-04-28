@@ -9,7 +9,7 @@
  *  - System tray
  */
 
-const { app, BrowserWindow, ipcMain, session, Tray, Menu, nativeImage, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, session, Tray, Menu, nativeImage, shell, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -42,7 +42,7 @@ let isQuitting = false;
 
 // ─── Tool Handler (direct require, no HTTP) ──────────────────
 // Pre-load the tool handler so it's ready when IPC calls come in.
-const { getToolList, handleToolCall } = require('../server/mcp-handler');
+const { getToolList, handleToolCall, getWorkspace, setWorkspace } = require('../server/mcp-handler');
 
 console.log(`[DS Agent] Tool handler loaded — ${getToolList().length} tools available`);
 
@@ -141,6 +141,7 @@ function createControlPanel() {
       preload: path.join(__dirname, '..', 'preload', 'index.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false,
     },
   });
 
@@ -246,6 +247,40 @@ function setupIPC() {
     createControlPanel();
   });
 
+  // Workspace management
+  ipcMain.handle('workspace:get', () => {
+    return getWorkspace();
+  });
+
+  ipcMain.handle('workspace:set', (_event, newPath) => {
+    const result = setWorkspace(newPath);
+    // If successful, persist to config
+    if (!result.startsWith('错误') && !result.startsWith('切换工作目录失败')) {
+      const data = loadConfig();
+      data.workspace = getWorkspace();
+      saveConfig(data);
+    }
+    return result;
+  });
+
+  ipcMain.handle('workspace:select-folder', async () => {
+    const result = await dialog.showOpenDialog({
+      title: '选择工作目录',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+    const selectedPath = result.filePaths[0];
+    const setResult = setWorkspace(selectedPath);
+    if (!setResult.startsWith('错误') && !setResult.startsWith('切换工作目录失败')) {
+      const data = loadConfig();
+      data.workspace = getWorkspace();
+      saveConfig(data);
+    }
+    return getWorkspace();
+  });
+
   // Navigate to a chat site
   ipcMain.handle('nav:goto', (_event, url) => {
     if (mainWindow) {
@@ -294,7 +329,18 @@ function setupIPC() {
 
 function getIconPath() {
   const ext = process.platform === 'win32' ? 'ico' : process.platform === 'darwin' ? 'icns' : 'png';
-  return path.join(__dirname, '..', '..', 'assets', `icon.${ext}`);
+  const iconPath = path.join(__dirname, '..', '..', 'assets', `icon.${ext}`);
+  // In packaged app, resources are in process.resourcesPath
+  if (!fs.existsSync(iconPath)) {
+    const packagedPath = path.join(process.resourcesPath, 'assets', `icon.${ext}`);
+    if (fs.existsSync(packagedPath)) return packagedPath;
+    // Fallback: try PNG which is the most universal
+    const pngPath = path.join(__dirname, '..', '..', 'assets', 'icon.png');
+    if (fs.existsSync(pngPath)) return pngPath;
+    const packagedPng = path.join(process.resourcesPath, 'assets', 'icon.png');
+    if (fs.existsSync(packagedPng)) return packagedPng;
+  }
+  return iconPath;
 }
 
 // ─── App Lifecycle ───────────────────────────────────────────
@@ -306,6 +352,15 @@ app.whenReady().then(async () => {
   // 1. Setup IPC (tool handlers are already loaded via require)
   setupIPC();
 
+  // 1.5 Restore workspace from saved config
+  try {
+    const configPath = path.join(app.getPath('userData'), 'agent-config.json');
+    const savedConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    if (savedConfig.workspace) {
+      setWorkspace(savedConfig.workspace);
+    }
+  } catch { /* no config yet, use default */ }
+
   // 2. Create main window
   createMainWindow();
 
@@ -315,7 +370,7 @@ app.whenReady().then(async () => {
   // 4. Create tray (after window is ready)
   createTray();
 
-  console.log('[DS Agent] Application ready — pure IPC mode, no HTTP server');
+  console.log(`[DS Agent] Application ready — pure IPC mode, workspace: ${getWorkspace()}`);
 });
 
 app.on('window-all-closed', () => {

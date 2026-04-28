@@ -3,6 +3,7 @@
  *
  * Ported from Python tools/shell.py
  * Provides: execute_command, get_cwd, list_directory, read_file, write_file, edit_file
+ *           set_workspace, get_workspace
  */
 
 const { exec } = require('child_process');
@@ -10,13 +11,30 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-// ─── Constants ───────────────────────────────────────────────
-const WORKSPACE_ROOT = process.env.DS_WORKSPACE
+// ─── Workspace Root ──────────────────────────────────────────
+// Priority: 1. DS_WORKSPACE env  2. Default ~/DS-Agent
+const DEFAULT_WORKSPACE_NAME = 'DS-Agent';
+
+function getDefaultWorkspace() {
+  return path.join(os.homedir(), DEFAULT_WORKSPACE_NAME);
+}
+
+let WORKSPACE_ROOT = process.env.DS_WORKSPACE
   ? path.resolve(process.env.DS_WORKSPACE)
-  : process.cwd();
+  : getDefaultWorkspace();
+
+// Ensure default workspace directory exists
+if (!process.env.DS_WORKSPACE && !fs.existsSync(WORKSPACE_ROOT)) {
+  try {
+    fs.mkdirSync(WORKSPACE_ROOT, { recursive: true });
+    console.log(`[DS Agent] Default workspace created: ${WORKSPACE_ROOT}`);
+  } catch (err) {
+    console.error(`[DS Agent] Failed to create default workspace: ${err.message}`);
+  }
+}
 
 const IS_WINDOWS = process.platform === 'win32';
-const PLATFORM_NAME = IS_WINDOWS ? 'Windows' : 'Linux';
+const PLATFORM_NAME = IS_WINDOWS ? 'Windows' : process.platform === 'darwin' ? 'macOS' : 'Linux';
 
 // Dangerous command patterns — same as Python version
 const DANGEROUS_PATTERNS = [
@@ -91,6 +109,33 @@ function executeCommand(command, timeout = 30) {
 }
 
 function getCwd() {
+  return WORKSPACE_ROOT;
+}
+
+function setWorkspace(newPath) {
+  if (!newPath || typeof newPath !== 'string') {
+    return `错误：无效的工作目录路径`;
+  }
+  const resolved = path.resolve(newPath.startsWith('~')
+    ? newPath.replace('~', os.homedir())
+    : newPath);
+
+  try {
+    if (!fs.existsSync(resolved)) {
+      fs.mkdirSync(resolved, { recursive: true });
+    }
+    if (!fs.statSync(resolved).isDirectory()) {
+      return `错误：'${resolved}' 不是一个目录`;
+    }
+    WORKSPACE_ROOT = resolved;
+    console.log(`[DS Agent] Workspace changed to: ${WORKSPACE_ROOT}`);
+    return `工作目录已切换到: ${WORKSPACE_ROOT}`;
+  } catch (err) {
+    return `切换工作目录失败: ${err.message}`;
+  }
+}
+
+function getWorkspace() {
   return WORKSPACE_ROOT;
 }
 
@@ -249,7 +294,7 @@ function searchInFiles(pattern, directory = '.', filePattern = '*', maxResults =
 const TOOL_DEFINITIONS = [
   {
     name: 'execute_command',
-    description: `执行 shell 命令。工作区: ${WORKSPACE_ROOT}（平台: ${PLATFORM_NAME}，${IS_WINDOWS ? '请使用 cmd.exe 语法' : '请使用 bash 语法'}）`,
+    description: `执行 shell 命令。工作区: ${WORKSPACE_ROOT}（平台: ${PLATFORM_NAME}，${IS_WINDOWS ? '请使用 cmd.exe 语法' : '请使用 bash 语法'}）。可用 set_workspace 切换工作目录`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -263,6 +308,17 @@ const TOOL_DEFINITIONS = [
     name: 'get_cwd',
     description: `获取当前工作区目录路径（${WORKSPACE_ROOT}）`,
     inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'set_workspace',
+    description: '设置工作目录。切换后所有文件操作和命令执行都将在新目录下进行',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '新的工作目录路径（支持 ~ 表示用户主目录）' },
+      },
+      required: ['path'],
+    },
   },
   {
     name: 'list_directory',
@@ -335,6 +391,7 @@ const TOOL_DEFINITIONS = [
 const HANDLERS = {
   sync: {
     get_cwd: (args) => getCwd(),
+    set_workspace: (args) => setWorkspace(args.path || ''),
     list_directory: (args) => listDirectory(args.path || '.'),
     read_file: (args) => readFile(args.path || '', args.encoding || 'utf-8', args.max_bytes || 1048576),
     write_file: (args) => writeFile(args.path || '', args.content || '', args.encoding || 'utf-8'),
@@ -346,4 +403,4 @@ const HANDLERS = {
   },
 };
 
-module.exports = { TOOL_DEFINITIONS, HANDLERS };
+module.exports = { TOOL_DEFINITIONS, HANDLERS, getWorkspace, setWorkspace };
