@@ -3,7 +3,7 @@
  *
  * Responsibilities:
  *  - Window management (main chat window + control panel)
- *  - MCP Server lifecycle (start/stop Node.js server)
+ *  - Tool execution via direct function calls (no HTTP server)
  *  - Request interception (webRequest API)
  *  - IPC bridge between renderer and tools
  *  - System tray
@@ -38,19 +38,13 @@ const CHROME_UA = `Mozilla/5.0 (${PLATFORM_UA}) AppleWebKit/537.36 (KHTML, like 
 let mainWindow = null;
 let controlPanel = null;
 let tray = null;
-let mcpPort = 8024;
 let isQuitting = false;
 
-// ─── MCP Server ──────────────────────────────────────────────
-async function initMCPServer() {
-  try {
-    const { startMCPServer } = require('../server/index');
-    mcpPort = await startMCPServer(mcpPort);
-    console.log(`[DS Agent] MCP Server started on port ${mcpPort}`);
-  } catch (err) {
-    console.error('[DS Agent] MCP Server failed to start:', err);
-  }
-}
+// ─── Tool Handler (direct require, no HTTP) ──────────────────
+// Pre-load the tool handler so it's ready when IPC calls come in.
+const { getToolList, handleToolCall } = require('../server/mcp-handler');
+
+console.log(`[DS Agent] Tool handler loaded — ${getToolList().length} tools available`);
 
 // ─── Session Setup ──────────────────────────────────────────
 // Configure the default session to look like a normal Chrome browser.
@@ -200,10 +194,9 @@ function setupRequestInterception() {
 // ─── IPC Handlers ────────────────────────────────────────────
 
 function setupIPC() {
-  // MCP tool calls from renderer
+  // MCP tool calls from renderer (direct function call, no HTTP)
   ipcMain.handle('mcp:call-tool', async (_event, toolName, args) => {
     try {
-      const { handleToolCall } = require('../server/mcp-handler');
       const resultText = await handleToolCall(toolName, args);
       return {
         success: true,
@@ -226,21 +219,19 @@ function setupIPC() {
   // Get tool list
   ipcMain.handle('mcp:list-tools', async () => {
     try {
-      const { getToolList } = require('../server/mcp-handler');
       return { success: true, data: getToolList() };
     } catch (err) {
       return { success: false, error: err.message };
     }
   });
 
-  // Health check
+  // Health check (no port — pure IPC, no HTTP server)
   ipcMain.handle('mcp:health', async () => {
     try {
-      const { getToolList } = require('../server/mcp-handler');
       const tools = getToolList();
-      return { success: true, port: mcpPort, tools: tools.length };
+      return { success: true, tools: tools.length };
     } catch {
-      return { success: true, port: mcpPort, tools: 0 };
+      return { success: true, tools: 0 };
     }
   });
 
@@ -274,9 +265,6 @@ function setupIPC() {
     if (url.includes('chatgpt.com') || url.includes('chat.openai.com')) return 'chatgpt';
     return 'unknown';
   });
-
-  // Get MCP server port
-  ipcMain.handle('mcp:get-port', () => mcpPort);
 
   // Config management — simple JSON file store (electron-store v10 is ESM-only)
   const configPath = path.join(app.getPath('userData'), 'agent-config.json');
@@ -315,8 +303,8 @@ app.whenReady().then(async () => {
   // 0. Setup session (UA, headers) BEFORE any window is created
   setupSession();
 
-  // 1. Start MCP Server
-  await initMCPServer();
+  // 1. Setup IPC (tool handlers are already loaded via require)
+  setupIPC();
 
   // 2. Create main window
   createMainWindow();
@@ -324,13 +312,10 @@ app.whenReady().then(async () => {
   // 3. Setup request interception
   setupRequestInterception();
 
-  // 4. Setup IPC
-  setupIPC();
-
-  // 5. Create tray (after window is ready)
+  // 4. Create tray (after window is ready)
   createTray();
 
-  console.log('[DS Agent] Application ready');
+  console.log('[DS Agent] Application ready — pure IPC mode, no HTTP server');
 });
 
 app.on('window-all-closed', () => {
@@ -341,10 +326,6 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
-  try {
-    const { stopMCPServer } = require('../server/index');
-    stopMCPServer(); // fire-and-forget — don't block quit
-  } catch { /* ignore */ }
 });
 
 app.on('activate', () => {

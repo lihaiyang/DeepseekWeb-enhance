@@ -17,13 +17,7 @@
     "electron": "^35.0.0",
     "electron-builder": "^26.0.0"
   },
-  "dependencies": {
-    "express": "^5.1.0",
-    "cors": "^2.8.5",
-    "multer": "^1.4.5-lts.2",
-    "cheerio": "^1.0.0",
-    "uuid": "^11.1.0"
-  },
+  "dependencies": {},
   "build": {
     "appId": "com.ds-enhance.agent",
     "productName": "DS Agent",
@@ -32,7 +26,6 @@
     },
     "files": [
       "src/**/*",
-      "server/**/*",
       "assets/**/*"
     ],
     "mac": {
@@ -63,12 +56,6 @@
       ],
       "category": "Utility",
       "icon": "assets/icon.png"
-    },
-    "extraResources": [
-      {
-        "from": "server",
-        "to": "server"
-      }
-    ]
+    }
   }
 }

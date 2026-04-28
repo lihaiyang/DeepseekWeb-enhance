@@ -24,11 +24,10 @@ const path = require('path');
 contextBridge.exposeInMainWorld('dsAgent', {
   version: '1.0.0',
 
-  // MCP Tool Calls
+  // MCP Tool Calls (pure IPC, no HTTP server)
   callTool: (toolName, args) => ipcRenderer.invoke('mcp:call-tool', toolName, args),
   listTools: () => ipcRenderer.invoke('mcp:list-tools'),
   health: () => ipcRenderer.invoke('mcp:health'),
-  getMCPPort: () => ipcRenderer.invoke('mcp:get-port'),
 
   // Agent Context
   updateToolHint: (hint) => ipcRenderer.send('agent:update-tool-hint', hint),

@@ -466,12 +466,12 @@
     // 1. Create UI
     createPanel();
 
-    // 2. Check MCP connection
+    // 2. Check tool handler connection (IPC, no HTTP)
     try {
       const health = await window.dsAgent.health();
-      updateStatus('ds-agent-conn-status', health.success ? '✅ 已连接' : '❌ 未连接');
+      updateStatus('ds-agent-conn-status', health.success ? '✅ 已就绪' : '❌ 未就绪');
     } catch {
-      updateStatus('ds-agent-conn-status', '❌ 未连接');
+      updateStatus('ds-agent-conn-status', '❌ 未就绪');
     }
 
     // 3. Load tool registry
