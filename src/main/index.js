@@ -15,11 +15,7 @@ const fs = require('fs');
 
 // ─── Constants ────────────────────────────────────────────────
 const IS_DEV = process.argv.includes('--dev');
-const CHAT_URLS = [
-  'https://chat.deepseek.com',
-  'https://chatgpt.com',
-  'https://chat.openai.com',
-];
+const CHAT_URLS = ['https://chat.deepseek.com'];
 const DEFAULT_CHAT_URL = CHAT_URLS[0];
 
 // ─── Browser Fingerprint ─────────────────────────────────────
@@ -162,8 +158,6 @@ function createTray() {
     { label: '控制面板', click: () => createControlPanel() },
     { type: 'separator' },
     { label: 'DeepSeek', click: () => mainWindow?.loadURL('https://chat.deepseek.com') },
-    { label: 'ChatGPT', click: () => mainWindow?.loadURL('https://chatgpt.com') },
-    { type: 'separator' },
     { label: '退出', click: () => { isQuitting = true; tray?.destroy(); tray = null; app.quit(); } },
   ]);
 
@@ -184,7 +178,7 @@ function setupRequestInterception() {
   if (IS_DEV) {
     const ses = mainWindow.webContents.session;
     ses.webRequest.onCompleted(
-      { urls: ['*://chat.deepseek.com/api/v0/*', '*://chatgpt.com/backend-api/*'] },
+      { urls: ['*://chat.deepseek.com/api/v0/*'] },
       (details) => {
         console.log(`[DS Agent] ${details.method} ${details.url} → ${details.statusCode}`);
       }
@@ -395,7 +389,7 @@ app.on('activate', () => {
 app.on('web-contents-created', (_event, contents) => {
   contents.setWindowOpenHandler(({ url }) => {
     // Open external links in system browser
-    if (!url.includes('chat.deepseek.com') && !url.includes('chatgpt.com') && !url.includes('chat.openai.com')) {
+    if (!url.includes('chat.deepseek.com')) {
       shell.openExternal(url);
       return { action: 'deny' };
     }

@@ -64,7 +64,7 @@ contextBridge.exposeInMainWorld('dsAgent', {
 console.log('[DS Agent] Preload script loaded — window.dsAgent API available');
 
 // ─── Detect if we're on a chat page ──────────────────────────
-const CHAT_HOSTNAMES = ['chat.deepseek.com', 'chatgpt.com', 'chat.openai.com'];
+const CHAT_HOSTNAMES = ['chat.deepseek.com'];
 const currentURL = window.location.href;
 const isChatPage = CHAT_HOSTNAMES.some(h => currentURL.includes(h));
 
@@ -152,172 +152,153 @@ if (isChatPage) {
   // CRITICAL: We must hook fetch/XHR BEFORE the page's JavaScript uses them.
   // We inject a <script> tag that runs in the MAIN WORLD as early as possible.
 
-  const earlyHookCode = `
-(function() {
-  'use strict';
-  var PREFIX = '[DS Agent]';
+  // ─── Core SSE processing (preload-side, serialized into main world via .toString()) ──
 
-  // Save originals BEFORE page JS can use them
-  var _origFetch = window.fetch;
-  var _origXHROpen = XMLHttpRequest.prototype.open;
-  var _origXHRSend = XMLHttpRequest.prototype.send;
-
-  // Store for tool hint — will be set by agent.js when ready
-  window.__dsAgentToolHint = '';
-  window.__dsAgentToolFiles = [];
-
-  // Request body modifier
-  function modifyRequestBody(bodyStr) {
-    if (!bodyStr) return bodyStr;
-    var hint = window.__dsAgentToolHint;
-    if (!hint) return bodyStr;
-
+  function _processSSELine(line, thinkingAcc, responseAcc, pTracker) {
+    var trimmed = line.trim();
+    if (!trimmed || trimmed.indexOf('data:') !== 0) return;
+    var jsonStr = trimmed.slice(trimmed.indexOf('data:') + 5).trim();
+    if (!jsonStr || jsonStr === '[DONE]') return;
     try {
-      var parsed = JSON.parse(bodyStr);
-      if (bodyStr.indexOf('[系统指令]') !== -1) return bodyStr;
-
-      // DeepSeek style: { prompt: "..." }
-      if (parsed.prompt && typeof parsed.prompt === 'string') {
-        parsed.prompt = hint + '\\n\\n' + parsed.prompt;
-        return JSON.stringify(parsed);
+      var obj = JSON.parse(jsonStr);
+      if (obj.p !== undefined && pTracker) { pTracker[obj.p] = (pTracker[obj.p] || 0) + 1; }
+      if (typeof obj.thinking === 'string' && obj.thinking.length > 0) { thinkingAcc.val += obj.thinking; }
+      if (obj.type === 'thinking' && typeof obj.content === 'string' && obj.content.length > 0) { thinkingAcc.val += obj.content; }
+      if (obj.choices && obj.choices[0] && obj.choices[0].delta) {
+        var d = obj.choices[0].delta;
+        if (typeof d.reasoning_content === 'string' && d.reasoning_content.length > 0) { thinkingAcc.val += d.reasoning_content; }
+        if (typeof d.content === 'string' && d.content.length > 0) { responseAcc.val += d.content; }
       }
-      // ChatGPT style: { messages: [...] }
-      if (parsed.messages && parsed.messages.length) {
-        var hasHint = parsed.messages.some(function(m) {
-          return m.role === 'system' && typeof m.content === 'string' && m.content.indexOf('[系统指令]') !== -1;
-        });
-        if (!hasHint) {
-          parsed.messages.unshift({ role: 'system', content: hint });
-          return JSON.stringify(parsed);
-        }
+      if (typeof obj.v === 'string' && obj.v.length > 0) {
+        var p = (obj.p || '').toLowerCase();
+        if (p.indexOf('status') !== -1) return;
+        if (p.indexOf('think') !== -1 || p.indexOf('reason') !== -1) { thinkingAcc.val += obj.v; }
+        else { responseAcc.val += obj.v; }
       }
-    } catch(e) { /* not JSON, return as-is */ }
-
-    // Inject tool file context
-    if (window.__dsAgentToolFiles.length > 0) {
-      try {
-        var parsed = JSON.parse(bodyStr);
-        var ctx = '\\n\\n[上传文件内容]\\n';
-        for (var i = 0; i < window.__dsAgentToolFiles.length; i++) {
-          var f = window.__dsAgentToolFiles[i];
-          ctx += '\\n--- ' + f.filename + ' ---\\n' + f.text + '\\n';
-        }
-        if (parsed.prompt && typeof parsed.prompt === 'string') {
-          parsed.prompt += ctx;
-        } else if (parsed.messages && parsed.messages.length) {
-          var lastMsg = parsed.messages[parsed.messages.length - 1];
-          if (typeof lastMsg.content === 'string') lastMsg.content += ctx;
-        }
-        window.__dsAgentToolFiles = [];
-        return JSON.stringify(parsed);
-      } catch(e) { /* ignore */ }
-    }
-
-    return bodyStr;
+    } catch(e) {}
   }
 
-  // SSE parser
-  function parseSSEChunk(rawText) {
-    var content = '';
-    var lines = rawText.split('\\n');
-    for (var i = 0; i < lines.length; i++) {
-      var trimmed = lines[i].trim();
-      if (!trimmed || trimmed.indexOf('data: ') !== 0) continue;
-      var jsonStr = trimmed.slice(6).trim();
-      if (jsonStr === '[DONE]') continue;
-      try {
-        var obj = JSON.parse(jsonStr);
-        if (typeof obj.v === 'string' && obj.v.length > 0) {
-          var p = obj.p || '';
-          if (p.indexOf('fragments') === -1 && p.indexOf('status') === -1) {
-            content += obj.v;
-          }
-          continue;
-        }
-        var c = obj && obj.choices && obj.choices[0] && obj.choices[0].delta && obj.choices[0].delta.content;
-        if (c) { content += c; continue; }
-        var mc = obj && obj.choices && obj.choices[0] && obj.choices[0].message && obj.choices[0].message.content;
-        if (mc) { content += mc; continue; }
-      } catch(e) { /* not JSON */ }
+  function _fireStreamCallbacks(thinkingAcc, responseAcc, isFinal) {
+    if (thinkingAcc.val && window.__dsAgentOnThinking) { window.__dsAgentOnThinking(thinkingAcc.val); }
+    if (responseAcc.val && window.__dsAgentOnStreamContent) { window.__dsAgentOnStreamContent(responseAcc.val); }
+    if (isFinal && responseAcc.val && window.__dsAgentCheckToolCalls) {
+      var calls = window.__dsAgentCheckToolCalls(responseAcc.val);
+      if (calls && calls.length > 0 && window.__dsAgentRunLoop) {
+        console.log('[DS Agent] Detected ' + calls.length + ' tool call(s)');
+        window.__dsAgentRunLoop(calls);
+      }
     }
-    return content;
   }
 
-  // Will be set by agent.js when ready
-  window.__dsAgentCheckToolCalls = null;
-  window.__dsAgentRunLoop = null;
-
-  // Hook fetch
-  window.fetch = async function() {
-    var url = (typeof arguments[0] === 'string') ? arguments[0] : (arguments[0] && arguments[0].url);
-    var isCompletion = url && (url.indexOf('completion') !== -1 || url.indexOf('conversation') !== -1);
-
-    if (isCompletion && arguments[1] && arguments[1].body) {
-      try {
-        arguments[1].body = modifyRequestBody(arguments[1].body);
-      } catch(e) { console.error(PREFIX + ' fetch body mod error:', e); }
-    }
-
-    var response = await _origFetch.apply(this, arguments);
-
-    if (isCompletion) {
-      var clone = response.clone();
-      clone.text().then(function(text) {
-        var content = parseSSEChunk(text);
-        if (content && window.__dsAgentCheckToolCalls) {
-          var calls = window.__dsAgentCheckToolCalls(content);
-          if (calls && calls.length > 0 && window.__dsAgentRunLoop) {
-            console.log(PREFIX + ' Detected ' + calls.length + ' tool call(s) in fetch');
-            window.__dsAgentRunLoop(calls);
-          }
-        }
-      }).catch(function() {});
-    }
-
-    return response;
-  };
-
-  // Hook XMLHttpRequest
-  var xhrMeta = new WeakMap();
-
-  XMLHttpRequest.prototype.open = function(method, url) {
-    xhrMeta.set(this, { url: url, method: method });
-    return _origXHROpen.apply(this, arguments);
-  };
-
-  XMLHttpRequest.prototype.send = function(body) {
-    var meta = xhrMeta.get(this);
-    var isCompletion = meta && meta.url && (meta.url.indexOf('completion') !== -1 || meta.url.indexOf('conversation') !== -1);
-
-    if (isCompletion && body) {
-      try {
-        body = modifyRequestBody(body);
-      } catch(e) { console.error(PREFIX + ' XHR body mod error:', e); }
-    }
-
-    if (isCompletion) {
-      var requestContent = '';
-      this.addEventListener('load', function() {
-        try {
-          var rt = this.responseText || '';
-          if (rt) requestContent = parseSSEChunk(rt);
-        } catch(e) { /* ignore */ }
-        if (requestContent && window.__dsAgentCheckToolCalls) {
-          var calls = window.__dsAgentCheckToolCalls(requestContent);
-          if (calls && calls.length > 0 && window.__dsAgentRunLoop) {
-            console.log(PREFIX + ' Detected ' + calls.length + ' tool call(s) in XHR');
-            window.__dsAgentRunLoop(calls);
-          }
-        }
-      });
-    }
-
-    return _origXHRSend.apply(this, [body]);
-  };
-
-  console.log(PREFIX + ' Network hooks installed (early injection)');
-})();
-`;
+  // Build injected script from preload functions + glue code.
+  // Using .toString() avoids a fragile 250-line template literal.
+  const earlyHookCode =
+    'window.__dsAgentProcessLine = ' + _processSSELine.toString() + ';\n' +
+    'window.__dsAgentFireCallbacks = ' + _fireStreamCallbacks.toString() + ';\n' +
+    '(function() {\n' +
+    '  "use strict";\n' +
+    '  var PREFIX = "[DS Agent]";\n' +
+    '  var _origFetch = window.fetch;\n' +
+    '  var _origXHROpen = XMLHttpRequest.prototype.open;\n' +
+    '  var _origXHRSend = XMLHttpRequest.prototype.send;\n' +
+    '  window.__dsAgentToolHint = "";\n' +
+    '  window.__dsAgentToolFiles = [];\n' +
+    '\n' +
+    '  function modifyRequestBody(bodyStr) {\n' +
+    '    if (!bodyStr) return bodyStr;\n' +
+    '    var hint = window.__dsAgentToolHint;\n' +
+    '    if (!hint) return bodyStr;\n' +
+    '    try {\n' +
+    '      var parsed = JSON.parse(bodyStr);\n' +
+    '      if (bodyStr.indexOf("[系统指令]") !== -1) return bodyStr;\n' +
+    '      if (parsed.prompt && typeof parsed.prompt === "string") {\n' +
+    '        parsed.prompt = hint + "\\n\\n" + parsed.prompt;\n' +
+    '        return JSON.stringify(parsed);\n' +
+    '      }\n' +
+    '    } catch(e) {}\n' +
+    '    return bodyStr;\n' +
+    '  }\n' +
+    '\n' +
+    '  window.fetch = async function() {\n' +
+    '    var url = (typeof arguments[0] === "string") ? arguments[0] : (arguments[0] && arguments[0].url);\n' +
+    '    var isCompletion = url && (url.indexOf("completion") !== -1 || url.indexOf("conversation") !== -1);\n' +
+    '    if (isCompletion && arguments[1] && arguments[1].body) {\n' +
+    '      try { arguments[1].body = modifyRequestBody(arguments[1].body); } catch(e) {}\n' +
+    '    }\n' +
+    '    var response = await _origFetch.apply(this, arguments);\n' +
+    '    if (isCompletion && response.body) {\n' +
+    '      var clone = response.clone();\n' +
+    '      var reader = clone.body.getReader();\n' +
+    '      var decoder = new TextDecoder("utf-8");\n' +
+    '      var buffer = "";\n' +
+    '      var thinkingAcc = { val: "" };\n' +
+    '      var responseAcc = { val: "" };\n' +
+    '      var pTracker = {};\n' +
+    '      function pump() {\n' +
+    '        reader.read().then(function(result) {\n' +
+    '          if (result.done) {\n' +
+    '            if (buffer.trim()) {\n' +
+    '              var lines = buffer.split("\\n");\n' +
+    '              for (var i = 0; i < lines.length; i++) { window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, pTracker); }\n' +
+    '            }\n' +
+    '            window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true);\n' +
+    '            var pKeys = Object.keys(pTracker).filter(function(k) { return k !== "undefined"; });\n' +
+    '            if (pKeys.length > 0) { console.log(PREFIX + " SSE p-values:", JSON.stringify(pKeys), JSON.stringify(pTracker)); }\n' +
+    '            return;\n' +
+    '          }\n' +
+    '          var chunk = decoder.decode(result.value, { stream: true });\n' +
+    '          buffer += chunk;\n' +
+    '          var idx;\n' +
+    '          while ((idx = buffer.indexOf("\\n\\n")) !== -1) {\n' +
+    '            var eventText = buffer.substring(0, idx);\n' +
+    '            buffer = buffer.substring(idx + 2);\n' +
+    '            if (eventText.trim()) {\n' +
+    '              var lines = eventText.split("\\n");\n' +
+    '              for (var i = 0; i < lines.length; i++) { window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, pTracker); }\n' +
+    '            }\n' +
+    '          }\n' +
+    '          window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, false);\n' +
+    '          pump();\n' +
+    '        }).catch(function(err) {\n' +
+    '          console.error(PREFIX + " Stream error:", err);\n' +
+    '          window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true);\n' +
+    '        });\n' +
+    '      }\n' +
+    '      pump();\n' +
+    '    }\n' +
+    '    return response;\n' +
+    '  };\n' +
+    '\n' +
+    '  var xhrMeta = new WeakMap();\n' +
+    '  XMLHttpRequest.prototype.open = function(method, url) {\n' +
+    '    xhrMeta.set(this, { url: url, method: method });\n' +
+    '    return _origXHROpen.apply(this, arguments);\n' +
+    '  };\n' +
+    '  XMLHttpRequest.prototype.send = function(body) {\n' +
+    '    var meta = xhrMeta.get(this);\n' +
+    '    var isCompletion = meta && meta.url && (meta.url.indexOf("completion") !== -1 || meta.url.indexOf("conversation") !== -1);\n' +
+    '    if (isCompletion && body) {\n' +
+    '      try { body = modifyRequestBody(body); } catch(e) {}\n' +
+    '    }\n' +
+    '    if (isCompletion) {\n' +
+    '      this.addEventListener("load", function() {\n' +
+    '        try {\n' +
+    '          var rt = this.responseText || "";\n' +
+    '          if (!rt) return;\n' +
+    '          var thinkingAcc = { val: "" };\n' +
+    '          var responseAcc = { val: "" };\n' +
+    '          var lines = rt.split("\\n");\n' +
+    '          for (var i = 0; i < lines.length; i++) { window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, null); }\n' +
+    '          window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true);\n' +
+    '        } catch(e) {}\n' +
+    '      });\n' +
+    '    }\n' +
+    '    return _origXHRSend.apply(this, [body]);\n' +
+    '  };\n' +
+    '\n' +
+    '  console.log(PREFIX + " Network hooks installed (early injection)");\n' +
+    '})();\n' +
+    '';
 
   // ─── Inject <script> tag into MAIN WORLD ───────────────────
   // CRITICAL: Never use document.write() — it replaces the entire document!

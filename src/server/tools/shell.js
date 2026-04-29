@@ -128,6 +128,7 @@ function setWorkspace(newPath) {
       return `错误：'${resolved}' 不是一个目录`;
     }
     WORKSPACE_ROOT = resolved;
+    _updateToolDescriptions();
     console.log(`[DS Agent] Workspace changed to: ${WORKSPACE_ROOT}`);
     return `工作目录已切换到: ${WORKSPACE_ROOT}`;
   } catch (err) {
@@ -139,8 +140,13 @@ function getWorkspace() {
   return WORKSPACE_ROOT;
 }
 
-function listDirectory(dirPath = '.') {
+function listDirectory(dirPath) {
   try {
+    // Require absolute path (after tilde expansion)
+    const expanded = dirPath.startsWith('~') ? dirPath.replace('~', os.homedir()) : dirPath;
+    if (!path.isAbsolute(expanded)) {
+      return `错误：需要提供绝对路径，当前传入的是相对路径 "${dirPath}"。请使用以 / 开头的绝对路径（如 /home/user/projects）`;
+    }
     const resolved = validatePath(dirPath);
     if (!fs.existsSync(resolved)) return `错误：路径不存在 — ${resolved}`;
     if (!fs.statSync(resolved).isDirectory()) return `错误：这不是一个目录 — ${resolved}`;
@@ -291,6 +297,16 @@ function searchInFiles(pattern, directory = '.', filePattern = '*', maxResults =
 
 // ─── Tool Definitions (MCP Schema) ──────────────────────────
 
+function _updateToolDescriptions() {
+  for (const tool of TOOL_DEFINITIONS) {
+    if (tool.name === 'execute_command') {
+      tool.description = `执行 shell 命令。工作区: ${WORKSPACE_ROOT}（平台: ${PLATFORM_NAME}，${IS_WINDOWS ? '请使用 cmd.exe 语法' : '请使用 bash 语法'}）。可用 set_workspace 切换工作目录`;
+    } else if (tool.name === 'get_cwd') {
+      tool.description = `获取当前工作区目录路径（${WORKSPACE_ROOT}）`;
+    }
+  }
+}
+
 const TOOL_DEFINITIONS = [
   {
     name: 'execute_command',
@@ -322,12 +338,13 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'list_directory',
-    description: '列出工作区内指定目录的文件和子目录',
+    description: '列出工作区内指定目录的文件和子目录。path 必须是绝对路径（如 /home/user/projects）',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '目录路径（默认为当前目录）' },
+        path: { type: 'string', description: '目录路径（必填）' },
       },
+      required: ['path'],
     },
   },
   {
@@ -392,7 +409,10 @@ const HANDLERS = {
   sync: {
     get_cwd: (args) => getCwd(),
     set_workspace: (args) => setWorkspace(args.path || ''),
-    list_directory: (args) => listDirectory(args.path || '.'),
+    list_directory: (args) => {
+      const rawPath = (args.path || '').toString().trim();
+      return listDirectory(rawPath || WORKSPACE_ROOT);
+    },
     read_file: (args) => readFile(args.path || '', args.encoding || 'utf-8', args.max_bytes || 1048576),
     write_file: (args) => writeFile(args.path || '', args.content || '', args.encoding || 'utf-8'),
     edit_file: (args) => editFile(args.path || '', args.old_string || '', args.new_string || '', args.replace_all || false),
