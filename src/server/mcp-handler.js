@@ -8,14 +8,13 @@
 
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { TOOL_DEFINITIONS: SHELL_TOOLS, HANDLERS: SHELL_HANDLERS, getWorkspace, setWorkspace } = require('./tools/shell');
-const { TOOL_DEFINITIONS: FILE_TOOLS, HANDLERS: FILE_HANDLERS } = require('./tools/file-processor');
 
 // ─── Load Service Config ─────────────────────────────────────
 // Try to load mcp.json for service config (API keys, etc.)
 // Tool filtering is NO LONGER based on mcp.json — all tools are enabled by default.
 // mcp.json is only used for injecting config (e.g., API keys) into tool calls.
-const os = require('os');
 
 const _configSearchPaths = [
   path.join(os.homedir(), '.ds-agent', 'mcp.json'),                     // ~/.ds-agent/mcp.json (user config)
@@ -53,7 +52,7 @@ for (const [svcName, svc] of Object.entries(serviceConfig)) {
 const ALL_TOOLS = {};
 
 // All tools are enabled by default. mcp.json is only used for config injection.
-for (const toolDef of [...SHELL_TOOLS, ...FILE_TOOLS]) {
+for (const toolDef of SHELL_TOOLS) {
   ALL_TOOLS[toolDef.name] = toolDef;
 }
 
@@ -63,7 +62,6 @@ console.log(`[MCP Handler] Enabled tools: ${Object.keys(ALL_TOOLS).sort().join('
 // Sync handlers return values directly
 const SYNC_HANDLERS = {
   ...SHELL_HANDLERS.sync || {},
-  ...FILE_HANDLERS.sync || {},
 };
 
 // Async handlers return Promises
