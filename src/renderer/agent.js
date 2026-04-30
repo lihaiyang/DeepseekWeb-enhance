@@ -36,6 +36,7 @@
   let currentThinkingBubble = null; // Reference to thinking bubble
   let currentThinkingContent = '';  // Accumulated thinking text
   let thinkingExpanded = true;      // Whether thinking bubble is expanded
+  let lastStreamType = null;        // 'thinking' | 'response' | null — tracks current stream phase for interleaved think/response
 
   // ─── UI Elements (populated in createPanel) ──────────────────
   let panel = null;
@@ -296,7 +297,7 @@
       .ds-msg.thinking {
         align-self: flex-start; max-width: 90%;
         background: #252530; border-left: 3px solid #f9e2af;
-        font-size: 12px; padding: 0; overflow: hidden;
+        font-size: 12px; padding: 0;
         transition: all 0.2s ease;
       }
       .ds-msg.thinking .thinking-header {
@@ -575,7 +576,24 @@
   }
 
   function updateAiBubble(delta) {
-    if (!currentAiBubble) {
+    // Check if we need a new AI bubble: either no current one, or a thinking
+    // bubble was inserted after the current AI bubble (meaning we switched
+    // phases: response → thinking → response again).
+    var needNew = !currentAiBubble;
+    if (!needNew && currentAiBubble) {
+      var sib = currentAiBubble.nextElementSibling;
+      while (sib) {
+        if (sib.classList.contains('thinking')) { needNew = true; break; }
+        sib = sib.nextElementSibling;
+      }
+    }
+    if (needNew) {
+      // Finalize old AI bubble if it exists (keep it in DOM, just stop tracking)
+      if (currentAiBubble) {
+        currentAiBubble.classList.remove('streaming');
+        currentAiBubble = null;
+        currentAiContent = '';
+      }
       // Remove placeholder by ID (robust, no text-matching)
       const placeholder = document.getElementById('ds-agent-placeholder');
       if (placeholder) placeholder.remove();
@@ -606,13 +624,30 @@
   function addThinkingBubble(delta) {
     if (!messagesContainer) return;
 
-    if (currentThinkingBubble) {
-      // Append delta to existing thinking bubble
+    // Check if we need a new thinking bubble: either no current one, or an AI
+    // bubble was inserted after the current thinking bubble (meaning we switched
+    // phases: thinking → response → thinking again).
+    var needNew = !currentThinkingBubble;
+    if (!needNew && currentThinkingBubble) {
+      var sib = currentThinkingBubble.nextElementSibling;
+      while (sib) {
+        if (sib.classList.contains('ai')) { needNew = true; break; }
+        sib = sib.nextElementSibling;
+      }
+    }
+    if (!needNew && currentThinkingBubble) {
+      // Same thinking phase — append delta to existing thinking bubble
       currentThinkingContent += delta;
       const body = currentThinkingBubble.querySelector('.thinking-body');
       if (body) body.textContent += delta;
       scrollMessagesToBottom();
       return;
+    }
+
+    // Need a new thinking bubble — stop tracking the old one (it stays in DOM)
+    if (currentThinkingBubble) {
+      currentThinkingBubble = null;
+      currentThinkingContent = '';
     }
 
     // Create new thinking bubble
@@ -712,6 +747,7 @@
     // Finalize any previous AI + thinking bubbles
     finalizeAiBubble();
     finalizeThinkingBubble();
+    lastStreamType = null;
 
     // Remove any leftover placeholder bubbles
     const oldPlaceholders = messagesContainer?.querySelectorAll('.ds-msg.ai.streaming');
@@ -867,6 +903,7 @@
     // Finalize current AI + thinking bubbles so tool result responses get new bubbles
     finalizeAiBubble();
     finalizeThinkingBubble();
+    lastStreamType = null;
 
     updateStatus('ds-agent-loop-status', '🔄 运行中');
     const stopBtn = document.getElementById('ds-agent-stop');
@@ -1109,11 +1146,23 @@
       const placeholder = document.getElementById('ds-agent-placeholder');
       if (placeholder) placeholder.remove();
     }
+    // If switching from response back to thinking, finalize the previous AI bubble
+    // so the next thinking round gets a fresh thinking bubble.
+    if (lastStreamType === 'response' && currentAiBubble) {
+      finalizeAiBubble();
+    }
+    lastStreamType = 'thinking';
     addThinkingBubble(delta);
   }
 
   function onStreamContent(delta) {
     if (!messagesContainer) return;
+    // If switching from thinking to response, finalize the previous thinking bubble
+    // so the next response round gets a fresh AI bubble.
+    if (lastStreamType === 'thinking' && currentThinkingBubble) {
+      finalizeThinkingBubble();
+    }
+    lastStreamType = 'response';
     updateAiBubble(delta);
   }
 
