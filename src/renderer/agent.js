@@ -19,7 +19,7 @@
   const PREFIX = '[DS Agent]';
   const VERSION = '1.0.0';
   const TOOL_CALL_RE = /```mcp:(\w+)\n([\s\S]*?)```/g;
-  const MAX_AGENT_LOOPS = 50;
+  let maxAgentLoops = 100; // Default, overridden by config 'max_steps'
 
   // ─── State ──────────────────────────────────────────────────
   let toolRegistry = [];
@@ -736,6 +736,13 @@
   // ─── Input / Send Flow ───────────────────────────────────────
 
   async function sendUserMessage() {
+    // Prevent sending while agent is running (would interfere with the agentic loop)
+    if (agentRunning) {
+      console.log(PREFIX + ' Agent is running, ignoring user message');
+      addMessage('system', 'Agent 正在运行中，请等待完成或点击 ⏹ 停止后再发送消息');
+      return;
+    }
+
     const text = inputTextarea?.value?.trim();
     if (!text) return;
 
@@ -900,6 +907,14 @@
     agentStepCount = 0;
     executedCalls.clear();
 
+    // Re-read max steps from config (picks up changes made in control panel)
+    try {
+      const savedSteps = await window.dsAgent.getConfig('max_steps');
+      if (savedSteps != null && typeof savedSteps === 'number' && savedSteps > 0) {
+        maxAgentLoops = savedSteps;
+      }
+    } catch (err) { /* keep current value */ }
+
     // Finalize current AI + thinking bubbles so tool result responses get new bubbles
     finalizeAiBubble();
     finalizeThinkingBubble();
@@ -912,12 +927,15 @@
     try {
       let pendingCalls = [...toolCalls];
 
-      while (pendingCalls.length > 0 && agentStepCount < MAX_AGENT_LOOPS) {
+      while (pendingCalls.length > 0 && agentStepCount < maxAgentLoops) {
         if (agentAbortController.signal.aborted) {
           addStep('thinking', '⏹ 已停止', '用户手动停止了 Agent');
           addToolStepInline('thinking', '⏹ 已停止', '用户手动停止了 Agent');
           break;
         }
+
+        // ── Execute all tool calls, collect results (don't send yet) ──
+        var allResults = [];
 
         for (const call of pendingCalls) {
           if (agentAbortController.signal.aborted) break;
@@ -928,7 +946,6 @@
           const stepLabel = `🔧 步骤 ${agentStepCount}: ${call.name}`;
           const stepContent = JSON.stringify(call.args, null, 2).slice(0, 200);
           addStep('tool', stepLabel, stepContent);
-          // Also show inline if panel is in half/full mode (the inline area handles its own visibility)
           if (panelMode === 'half' || panelMode === 'full') {
             addToolStepInline('tool', stepLabel, stepContent);
           }
@@ -962,33 +979,93 @@
               }
             }
 
-            // Inject result into chat
-            await injectToolResult(call.name, resultText, isError);
+            // Collect result (send later as batch)
+            allResults.push({ toolName: call.name, resultText: String(resultText), isError: isError });
           } catch (err) {
             addStep('error', '❌ 异常', err.message);
             if (panelMode === 'half' || panelMode === 'full') {
               addToolStepInline('tool-error', '❌ 异常', err.message);
             }
-            await injectToolResult(call.name, err.message, true);
+            allResults.push({ toolName: call.name, resultText: err.message, isError: true });
           }
-
-          await sleep(500);
         }
 
-        // After injecting results, the AI will generate a new response
-        // Early network hooks will detect new tool calls and call runAgenticLoop again
-        break;
+        if (agentAbortController.signal.aborted) break;
+
+        // ── Build combined result message ──
+        var combinedResult = '';
+        for (var ri = 0; ri < allResults.length; ri++) {
+          var r = allResults[ri];
+          combinedResult += '<tool_result tool="' + r.toolName + '">\n';
+          combinedResult += (r.isError ? 'Error: ' : '') + r.resultText + '\n';
+          combinedResult += '</tool_result>\n\n';
+        }
+
+        // ── True multi-round agentic loop ──
+        // Set waiting flag BEFORE sending results, so the preload's
+        // _fireStreamCallbacks knows to resolve our promise instead of
+        // calling runAgenticLoop again.
+        window.__dsAgentLoopWaiting = true;
+        window.__dsAgentFinalResponse = '';
+
+        var streamResolve;
+        window.__dsAgentStreamPromise = new Promise(function (resolve) {
+          streamResolve = resolve;
+        });
+        window.__dsAgentStreamResolve = streamResolve;
+
+        // Send all results as a single batched message (triggers exactly one SSE stream)
+        await injectTextToChat(combinedResult);
+
+        // Wait for SSE stream with a generous timeout
+        var STREAM_TIMEOUT_MS = 1800000; // 30 minutes
+        var timedOut = false;
+        var timeoutId = setTimeout(function () {
+          timedOut = true;
+          if (streamResolve) streamResolve();
+        }, STREAM_TIMEOUT_MS);
+
+        try {
+          await window.__dsAgentStreamPromise;
+        } finally {
+          clearTimeout(timeoutId);
+          window.__dsAgentLoopWaiting = false;
+        }
+
+        if (timedOut) {
+          console.log(PREFIX + ' SSE stream wait timed out, stopping agent loop');
+          addStep('thinking', '⏰ 超时', '等待 AI 响应超时，Agent 循环终止');
+          if (panelMode === 'half' || panelMode === 'full') {
+            addToolStepInline('thinking', '⏰ 超时', '等待 AI 响应超时，Agent 循环终止');
+          }
+          break;
+        }
+
+        if (agentAbortController.signal.aborted) break;
+
+        // Check the final AI response for new tool calls
+        var finalResponse = window.__dsAgentFinalResponse || '';
+        executedCalls.clear(); // Reset dedup for the new round
+        pendingCalls = checkForToolCalls(finalResponse);
+
+        if (pendingCalls.length === 0) {
+          console.log(PREFIX + ' No more tool calls detected, agent loop complete');
+          break;
+        }
+
+        console.log(PREFIX + ' Detected ' + pendingCalls.length + ' new tool call(s), continuing loop (step ' + agentStepCount + ')');
       }
 
-      if (agentStepCount >= MAX_AGENT_LOOPS) {
-        addStep('thinking', '⚠️ 达到上限', `已执行 ${MAX_AGENT_LOOPS} 步，自动停止`);
+      if (agentStepCount >= maxAgentLoops) {
+        addStep('thinking', '⚠️ 达到上限', `已执行 ${maxAgentLoops} 步，自动停止`);
         if (panelMode === 'half' || panelMode === 'full') {
-          addToolStepInline('thinking', '⚠️ 达到上限', `已执行 ${MAX_AGENT_LOOPS} 步，自动停止`);
+          addToolStepInline('thinking', '⚠️ 达到上限', `已执行 ${maxAgentLoops} 步，自动停止`);
         }
       }
     } finally {
       agentRunning = false;
       agentAbortController = null;
+      window.__dsAgentLoopWaiting = false; // Safety: ensure waiting flag is cleared
       updateStatus('ds-agent-loop-status', '空闲');
       const stopBtn2 = document.getElementById('ds-agent-stop');
       if (stopBtn2) stopBtn2.style.display = 'none';
@@ -999,6 +1076,12 @@
     if (agentAbortController) {
       agentAbortController.abort();
       agentRunning = false;
+
+      // Resolve any waiting stream promise so the loop can exit cleanly
+      if (window.__dsAgentLoopWaiting && typeof window.__dsAgentStreamResolve === 'function') {
+        window.__dsAgentStreamResolve();
+      }
+
       updateStatus('ds-agent-loop-status', '⏹ 已停止');
       addStep('thinking', '⏹ 已停止', '用户手动停止了 Agent');
       if (panelMode === 'half' || panelMode === 'full') {
@@ -1009,9 +1092,8 @@
 
   // ─── Result Injection ──────────────────────────────────────
 
-  async function injectToolResult(toolName, resultText, isError) {
-    const wrappedText = `<tool_result>\n${isError ? 'Error: ' : ''}${resultText}\n</tool_result>`;
-
+  // Send raw text into the DeepSeek chat (no wrapping — used for batched results)
+  async function injectTextToChat(text) {
     const input = findInputElement();
     if (!input) {
       console.error(`${PREFIX} Cannot find input element`);
@@ -1020,18 +1102,24 @@
 
     input.focus();
     await sleep(200);
-    setInputValue(input, wrappedText);
+    setInputValue(input, text);
     await sleep(300);
 
     const sendBtn = findSendButton();
     if (sendBtn) {
       sendBtn.click();
-      console.log(`${PREFIX} Tool result injected and sent`);
+      console.log(`${PREFIX} Batched tool results injected and sent`);
     } else {
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
     }
 
     await sleep(500);
+  }
+
+  // Legacy: inject a single tool result (kept for potential external use)
+  async function injectToolResult(toolName, resultText, isError) {
+    const wrappedText = `<tool_result>\n${isError ? 'Error: ' : ''}${resultText}\n</tool_result>`;
+    await injectTextToChat(wrappedText);
   }
 
   // ─── DOM Helpers ───────────────────────────────────────────
@@ -1198,6 +1286,17 @@
 
     // 3. Load tool registry
     await refreshToolRegistry();
+
+    // 3.5 Load max steps from config
+    try {
+      const savedSteps = await window.dsAgent.getConfig('max_steps');
+      if (savedSteps != null && typeof savedSteps === 'number' && savedSteps > 0) {
+        maxAgentLoops = savedSteps;
+        console.log(`${PREFIX} Max agent loops set to ${maxAgentLoops} from config`);
+      }
+    } catch (err) {
+      console.log(`${PREFIX} Could not read max_steps config, using default ${maxAgentLoops}`);
+    }
 
     // 4. Callbacks already registered early (before async delay) — see top of init()
 

@@ -278,11 +278,21 @@ if (isChatPage) {
     // ── END DEBUG LOG ──────────────────────────────────────────────────────
     if (thinkingDelta && typeof window.__dsAgentOnThinking === 'function') { window.__dsAgentOnThinking(thinkingDelta); }
     if (responseDelta && typeof window.__dsAgentOnStreamContent === 'function') { window.__dsAgentOnStreamContent(responseDelta); }
-    if (isFinal && responseAcc.val && typeof window.__dsAgentCheckToolCalls === 'function') {
-      var calls = window.__dsAgentCheckToolCalls(responseAcc.val);
-      if (calls && calls.length > 0 && typeof window.__dsAgentRunLoop === 'function') {
-        console.log('[DS Agent] Detected ' + calls.length + ' tool call(s)');
-        window.__dsAgentRunLoop(calls);
+    if (isFinal && responseAcc.val) {
+      // Store final response so the agent loop can read it
+      window.__dsAgentFinalResponse = responseAcc.val;
+
+      if (window.__dsAgentLoopWaiting && typeof window.__dsAgentStreamResolve === 'function') {
+        // Agent loop is actively waiting — resolve its promise instead of
+        // triggering runAgenticLoop again (which would cause double-execution).
+        window.__dsAgentStreamResolve();
+      } else if (typeof window.__dsAgentCheckToolCalls === 'function') {
+        // Normal flow (initial trigger): check for tool calls and start agent loop
+        var calls = window.__dsAgentCheckToolCalls(responseAcc.val);
+        if (calls && calls.length > 0 && typeof window.__dsAgentRunLoop === 'function') {
+          console.log('[DS Agent] Detected ' + calls.length + ' tool call(s)');
+          window.__dsAgentRunLoop(calls);
+        }
       }
     }
     return { thinkingLen: thinkingAcc.val.length, responseLen: responseAcc.val.length };
