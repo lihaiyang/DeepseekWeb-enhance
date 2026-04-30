@@ -574,15 +574,18 @@
     return el;
   }
 
-  function updateAiBubble(content) {
+  function updateAiBubble(delta) {
     if (!currentAiBubble) {
-      currentAiBubble = addMessage('ai', content, 'DS Agent');
+      // Remove placeholder by ID (robust, no text-matching)
+      const placeholder = document.getElementById('ds-agent-placeholder');
+      if (placeholder) placeholder.remove();
+      currentAiBubble = addMessage('ai', delta, 'DS Agent');
       currentAiBubble.classList.add('streaming');
-      currentAiContent = content;
+      currentAiContent = delta;
     } else {
-      currentAiContent = content;
+      currentAiContent += delta;
       const contentEl = currentAiBubble.querySelector('.msg-content');
-      if (contentEl) contentEl.textContent = content;
+      if (contentEl) contentEl.textContent += delta;
     }
     scrollMessagesToBottom();
   }
@@ -600,14 +603,14 @@
     currentThinkingContent = '';
   }
 
-  function addThinkingBubble(content) {
+  function addThinkingBubble(delta) {
     if (!messagesContainer) return;
 
     if (currentThinkingBubble) {
-      // Update existing thinking bubble
-      currentThinkingContent = content;
+      // Append delta to existing thinking bubble
+      currentThinkingContent += delta;
       const body = currentThinkingBubble.querySelector('.thinking-body');
-      if (body) body.textContent = content;
+      if (body) body.textContent += delta;
       scrollMessagesToBottom();
       return;
     }
@@ -624,7 +627,7 @@
     `;
 
     const body = el.querySelector('.thinking-body');
-    body.textContent = content;
+    body.textContent = delta;
 
     // Toggle collapse on header click
     const header = el.querySelector('.thinking-header');
@@ -637,7 +640,7 @@
     messagesContainer.appendChild(el);
     scrollMessagesToBottom();
     currentThinkingBubble = el;
-    currentThinkingContent = content;
+    currentThinkingContent = delta;
     return el;
   }
 
@@ -716,8 +719,12 @@
       for (const ph of oldPlaceholders) ph.remove();
     }
 
-    // Show loading placeholder — will be replaced when streaming starts
-    addMessage('ai', '思考中...').classList.add('streaming');
+    // Show loading placeholder with unique ID for robust cleanup
+    const placeholder = addMessage('ai', '思考中...');
+    if (placeholder) {
+      placeholder.classList.add('streaming');
+      placeholder.id = 'ds-agent-placeholder';
+    }
 
     // Inject into DeepSeek input and send
     const deepseekInput = findInputElement();
@@ -1095,40 +1102,33 @@
 
   // ─── Streaming Content Callbacks ─────────────────────────────
 
-  function onThinking(content) {
-    // Remove loading placeholder if present
+  function onThinking(delta) {
+    if (!messagesContainer) return;
+    // Remove placeholder if still present (before first AI bubble is created)
     if (!currentAiBubble) {
-      const placeholders = messagesContainer?.querySelectorAll('.ds-msg.ai.streaming');
-      if (placeholders) {
-        for (const ph of placeholders) {
-          if (ph.textContent.includes('思考中')) {
-            ph.remove();
-          }
-        }
-      }
+      const placeholder = document.getElementById('ds-agent-placeholder');
+      if (placeholder) placeholder.remove();
     }
-    addThinkingBubble(content);
+    addThinkingBubble(delta);
   }
 
-  function onStreamContent(content) {
-    // Remove placeholder if present
-    if (!currentAiBubble) {
-      const placeholders = messagesContainer?.querySelectorAll('.ds-msg.ai.streaming');
-      if (placeholders) {
-        for (const ph of placeholders) {
-          if (ph.textContent.includes('思考中')) {
-            ph.remove();
-          }
-        }
-      }
-    }
-    updateAiBubble(content);
+  function onStreamContent(delta) {
+    if (!messagesContainer) return;
+    updateAiBubble(delta);
   }
 
   // ─── Init ──────────────────────────────────────────────────
 
   async function init() {
     console.log(`${PREFIX} v${VERSION} initializing...`);
+
+    // Register callbacks IMMEDIATELY so early network hooks can use them.
+    // Callbacks are safe before panel creation — they check messagesContainer.
+    window.__dsAgentCheckToolCalls = checkForToolCalls;
+    window.__dsAgentRunLoop = runAgenticLoop;
+    window.__dsAgentOnThinking = onThinking;
+    window.__dsAgentOnStreamContent = onStreamContent;
+    console.log(`${PREFIX} Network hook callbacks registered early`);
 
     if (document.readyState !== 'complete') {
       await new Promise(resolve => window.addEventListener('load', resolve));
@@ -1150,12 +1150,7 @@
     // 3. Load tool registry
     await refreshToolRegistry();
 
-    // 4. Register callbacks for early network hooks
-    window.__dsAgentCheckToolCalls = checkForToolCalls;
-    window.__dsAgentRunLoop = runAgenticLoop;
-    window.__dsAgentOnThinking = onThinking;
-    window.__dsAgentOnStreamContent = onStreamContent;
-    console.log(`${PREFIX} Network hook callbacks registered (incl. thinking + streaming)`);
+    // 4. Callbacks already registered early (before async delay) — see top of init()
 
     // 5. Setup keyboard shortcuts
     setupKeyboardShortcuts();

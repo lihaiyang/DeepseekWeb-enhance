@@ -178,16 +178,21 @@ if (isChatPage) {
     } catch(e) {}
   }
 
-  function _fireStreamCallbacks(thinkingAcc, responseAcc, isFinal) {
-    if (thinkingAcc.val && window.__dsAgentOnThinking) { window.__dsAgentOnThinking(thinkingAcc.val); }
-    if (responseAcc.val && window.__dsAgentOnStreamContent) { window.__dsAgentOnStreamContent(responseAcc.val); }
-    if (isFinal && responseAcc.val && window.__dsAgentCheckToolCalls) {
+  function _fireStreamCallbacks(thinkingAcc, responseAcc, isFinal, lastThinkingLen, lastResponseLen) {
+    lastThinkingLen = lastThinkingLen || 0;
+    lastResponseLen = lastResponseLen || 0;
+    var thinkingDelta = thinkingAcc.val.substring(lastThinkingLen);
+    var responseDelta = responseAcc.val.substring(lastResponseLen);
+    if (thinkingDelta && typeof window.__dsAgentOnThinking === 'function') { window.__dsAgentOnThinking(thinkingDelta); }
+    if (responseDelta && typeof window.__dsAgentOnStreamContent === 'function') { window.__dsAgentOnStreamContent(responseDelta); }
+    if (isFinal && responseAcc.val && typeof window.__dsAgentCheckToolCalls === 'function') {
       var calls = window.__dsAgentCheckToolCalls(responseAcc.val);
-      if (calls && calls.length > 0 && window.__dsAgentRunLoop) {
+      if (calls && calls.length > 0 && typeof window.__dsAgentRunLoop === 'function') {
         console.log('[DS Agent] Detected ' + calls.length + ' tool call(s)');
         window.__dsAgentRunLoop(calls);
       }
     }
+    return { thinkingLen: thinkingAcc.val.length, responseLen: responseAcc.val.length };
   }
 
   // Build injected script from preload functions + glue code.
@@ -234,6 +239,7 @@ if (isChatPage) {
     '      var thinkingAcc = { val: "" };\n' +
     '      var responseAcc = { val: "" };\n' +
     '      var pTracker = {};\n' +
+    '      var lastLens = { thinkingLen: 0, responseLen: 0 };\n' +
     '      function pump() {\n' +
     '        reader.read().then(function(result) {\n' +
     '          if (result.done) {\n' +
@@ -241,7 +247,7 @@ if (isChatPage) {
     '              var lines = buffer.split("\\n");\n' +
     '              for (var i = 0; i < lines.length; i++) { window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, pTracker); }\n' +
     '            }\n' +
-    '            window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true);\n' +
+    '            lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true, lastLens.thinkingLen, lastLens.responseLen);\n' +
     '            var pKeys = Object.keys(pTracker).filter(function(k) { return k !== "undefined"; });\n' +
     '            if (pKeys.length > 0) { console.log(PREFIX + " SSE p-values:", JSON.stringify(pKeys), JSON.stringify(pTracker)); }\n' +
     '            return;\n' +
@@ -257,11 +263,11 @@ if (isChatPage) {
     '              for (var i = 0; i < lines.length; i++) { window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, pTracker); }\n' +
     '            }\n' +
     '          }\n' +
-    '          window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, false);\n' +
+    '          lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, false, lastLens.thinkingLen, lastLens.responseLen);\n' +
     '          pump();\n' +
     '        }).catch(function(err) {\n' +
     '          console.error(PREFIX + " Stream error:", err);\n' +
-    '          window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true);\n' +
+    '          lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true, lastLens.thinkingLen, lastLens.responseLen);\n' +
     '        });\n' +
     '      }\n' +
     '      pump();\n' +
@@ -281,15 +287,24 @@ if (isChatPage) {
     '      try { body = modifyRequestBody(body); } catch(e) {}\n' +
     '    }\n' +
     '    if (isCompletion) {\n' +
-    '      this.addEventListener("load", function() {\n' +
+    '      var thinkingAcc = { val: "" };\n' +
+    '      var responseAcc = { val: "" };\n' +
+    '      var lastProcessedLen = 0;\n' +
+    '      var lastLens = { thinkingLen: 0, responseLen: 0 };\n' +
+    '      this.addEventListener("readystatechange", function() {\n' +
     '        try {\n' +
-    '          var rt = this.responseText || "";\n' +
-    '          if (!rt) return;\n' +
-    '          var thinkingAcc = { val: "" };\n' +
-    '          var responseAcc = { val: "" };\n' +
-    '          var lines = rt.split("\\n");\n' +
-    '          for (var i = 0; i < lines.length; i++) { window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, null); }\n' +
-    '          window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true);\n' +
+    '          if (this.readyState === 3 || this.readyState === 4) {\n' +
+    '            var rt = this.responseText || "";\n' +
+    '            var newText = rt.substring(lastProcessedLen);\n' +
+    '            lastProcessedLen = rt.length;\n' +
+    '            if (newText) {\n' +
+    '              var lines = newText.split("\\n");\n' +
+    '              for (var i = 0; i < lines.length; i++) { window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, null); }\n' +
+    '              lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, this.readyState === 4, lastLens.thinkingLen, lastLens.responseLen);\n' +
+    '            } else if (this.readyState === 4) {\n' +
+    '              window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true, lastLens.thinkingLen, lastLens.responseLen);\n' +
+    '            }\n' +
+    '          }\n' +
     '        } catch(e) {}\n' +
     '      });\n' +
     '    }\n' +
