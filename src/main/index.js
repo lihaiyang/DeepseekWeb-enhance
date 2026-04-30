@@ -236,6 +236,14 @@ function setupIPC() {
     globalThis._currentToolHint = hint;
   });
 
+  // Debug logger — writes SSE frame data to ~/ds-agent-debug.log
+  const debugLogPath = path.join(require('os').homedir(), 'ds-agent-debug.log');
+  ipcMain.on('debug:log', (_event, line) => {
+    try {
+      fs.appendFileSync(debugLogPath, line + '\n');
+    } catch (e) { /* ignore */ }
+  });
+
   // Open control panel
   ipcMain.handle('ui:open-control-panel', () => {
     createControlPanel();

@@ -59,6 +59,9 @@ contextBridge.exposeInMainWorld('dsAgent', {
   removeAllListeners: (channel) => {
     ipcRenderer.removeAllListeners(channel);
   },
+
+  // Debug: write a log line to ~/ds-agent-debug.log via main process
+  debugLog: (line) => ipcRenderer.send('debug:log', line),
 });
 
 console.log('[DS Agent] Preload script loaded — window.dsAgent API available');
@@ -156,11 +159,28 @@ if (isChatPage) {
 
   function _processSSELine(line, thinkingAcc, responseAcc, pTracker) {
     var trimmed = line.trim();
-    if (!trimmed || trimmed.indexOf('data:') !== 0) return;
+    if (!trimmed || trimmed.indexOf('data:') === -1) return;
     var jsonStr = trimmed.slice(trimmed.indexOf('data:') + 5).trim();
     if (!jsonStr || jsonStr === '[DONE]') return;
     try {
       var obj = JSON.parse(jsonStr);
+      // ── DEBUG LOG ──────────────────────────────────────────────────────────
+      if (window.dsAgent && window.dsAgent.debugLog) {
+        var _prevR = responseAcc.val.length;
+        var _prevT = thinkingAcc.val.length;
+        var _logEntry = JSON.stringify({
+          t: Date.now(),
+          p: obj.p,
+          v: obj.v,
+          thinking: obj.thinking,
+          choiceContent: obj.choices && obj.choices[0] && obj.choices[0].delta ? obj.choices[0].delta.content : undefined,
+          choiceReason: obj.choices && obj.choices[0] && obj.choices[0].delta ? obj.choices[0].delta.reasoning_content : undefined,
+          rLen: _prevR,
+          tLen: _prevT,
+        });
+        window.dsAgent.debugLog(_logEntry);
+      }
+      // ── END DEBUG LOG ──────────────────────────────────────────────────────
       if (obj.p !== undefined && pTracker) { pTracker[obj.p] = (pTracker[obj.p] || 0) + 1; }
       if (typeof obj.thinking === 'string' && obj.thinking.length > 0) { thinkingAcc.val += obj.thinking; }
       if (obj.type === 'thinking' && typeof obj.content === 'string' && obj.content.length > 0) { thinkingAcc.val += obj.content; }
@@ -172,17 +192,90 @@ if (isChatPage) {
       if (typeof obj.v === 'string' && obj.v.length > 0) {
         var p = (obj.p || '').toLowerCase();
         if (p.indexOf('status') !== -1) return;
-        if (p.indexOf('think') !== -1 || p.indexOf('reason') !== -1) { thinkingAcc.val += obj.v; }
-        else { responseAcc.val += obj.v; }
+        // Use pTracker._currentFragType to route delta to the correct accumulator.
+        // DeepSeek increment frames come in two forms:
+        //   (a) {p: "response/fragments/-1/content", v: "..."}  — explicit path
+        //   (b) {v: "..."}  — no p field at all
+        // In both cases the delta belongs to the currently active fragment.
+        // Only route to responseAcc when p explicitly names a non-fragment field
+        // (e.g. "response/title") that is clearly not a fragment content update.
+        if (p.indexOf('think') !== -1 || p.indexOf('reason') !== -1) {
+          thinkingAcc.val += obj.v;
+        } else if (p === 'response/fragments/-1/content' || p === '' || p === 'response/fragments/-1') {
+          // Route by current fragment type (default THINK until first snapshot)
+          var fragType = (pTracker && pTracker._currentFragType) || 'THINK';
+          if (fragType === 'RESPONSE') { responseAcc.val += obj.v; }
+          else { thinkingAcc.val += obj.v; }
+        } else {
+          // Explicit non-fragment path — treat as response content
+          responseAcc.val += obj.v;
+        }
+      }
+      // Handle snapshot frames where obj.v is an object/array containing full fragments.
+      // These frames signal a fragment switch (e.g. THINK→RESPONSE) and carry the
+      // full content of all fragments so far. We update _currentFragType and replace
+      // the relevant accumulator with the snapshot value.
+      // Formats seen in the wild:
+      //   {v: {response: {fragments: [{type:"THINK"|"RESPONSE", content:"..."},...]}}}
+      //   {p: "response/fragments", v: [{type:"THINK"|"RESPONSE", content:"..."},...]}
+      if (obj.v !== null && typeof obj.v === 'object') {
+        var frags = null;
+        if (Array.isArray(obj.v)) {
+          frags = obj.v;
+        } else if (obj.v.response && Array.isArray(obj.v.response.fragments)) {
+          frags = obj.v.response.fragments;
+        }
+        if (frags && frags.length > 0) {
+          // Build full text for each type from the snapshot
+          var snapText = '';
+          var snapThink = '';
+          for (var fi = 0; fi < frags.length; fi++) {
+            if (typeof frags[fi].content !== 'string') continue;
+            if (frags[fi].type === 'RESPONSE') { snapText += frags[fi].content; }
+            else if (frags[fi].type === 'THINK') { snapThink += frags[fi].content; }
+          }
+          // The last fragment type in the snapshot is now active
+          var lastFrag = frags[frags.length - 1];
+          if (pTracker) {
+            pTracker._currentFragType = lastFrag.type;
+            // Signal _fireStreamCallbacks to reset lastLen so new snapshot
+            // content is emitted as a fresh delta from position 0.
+            if (snapThink && snapThink !== thinkingAcc.val) { pTracker._resetThinkingLen = 0; }
+            if (snapText && snapText !== responseAcc.val) { pTracker._resetResponseLen = 0; }
+          }
+          // Replace accumulators with snapshot values (snapshot is authoritative)
+          if (snapThink) { thinkingAcc.val = snapThink; }
+          if (snapText) { responseAcc.val = snapText; }
+        }
       }
     } catch(e) {}
   }
 
-  function _fireStreamCallbacks(thinkingAcc, responseAcc, isFinal, lastThinkingLen, lastResponseLen) {
+  function _fireStreamCallbacks(thinkingAcc, responseAcc, isFinal, lastThinkingLen, lastResponseLen, pTracker) {
     lastThinkingLen = lastThinkingLen || 0;
     lastResponseLen = lastResponseLen || 0;
+    // If a snapshot frame reset an accumulator, honour the reset signal
+    if (pTracker) {
+      if (pTracker._resetThinkingLen !== undefined) { lastThinkingLen = pTracker._resetThinkingLen; delete pTracker._resetThinkingLen; }
+      if (pTracker._resetResponseLen !== undefined) { lastResponseLen = pTracker._resetResponseLen; delete pTracker._resetResponseLen; }
+    }
     var thinkingDelta = thinkingAcc.val.substring(lastThinkingLen);
     var responseDelta = responseAcc.val.substring(lastResponseLen);
+    // ── DEBUG LOG ──────────────────────────────────────────────────────────
+    if (window.dsAgent && window.dsAgent.debugLog) {
+      window.dsAgent.debugLog(JSON.stringify({
+        t: Date.now(),
+        type: 'FIRE',
+        isFinal: isFinal,
+        lastR: lastResponseLen,
+        lastT: lastThinkingLen,
+        rTotal: responseAcc.val.length,
+        tTotal: thinkingAcc.val.length,
+        responseDelta: responseDelta,
+        thinkingDelta: thinkingDelta,
+      }));
+    }
+    // ── END DEBUG LOG ──────────────────────────────────────────────────────
     if (thinkingDelta && typeof window.__dsAgentOnThinking === 'function') { window.__dsAgentOnThinking(thinkingDelta); }
     if (responseDelta && typeof window.__dsAgentOnStreamContent === 'function') { window.__dsAgentOnStreamContent(responseDelta); }
     if (isFinal && responseAcc.val && typeof window.__dsAgentCheckToolCalls === 'function') {
@@ -247,8 +340,8 @@ if (isChatPage) {
     '              var lines = buffer.split("\\n");\n' +
     '              for (var i = 0; i < lines.length; i++) { window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, pTracker); }\n' +
     '            }\n' +
-    '            lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true, lastLens.thinkingLen, lastLens.responseLen);\n' +
-    '            var pKeys = Object.keys(pTracker).filter(function(k) { return k !== "undefined"; });\n' +
+    '            lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true, lastLens.thinkingLen, lastLens.responseLen, pTracker);\n' +
+    '            var pKeys = Object.keys(pTracker).filter(function(k) { return k !== "undefined" && k.charAt(0) !== "_"; });\n' +
     '            if (pKeys.length > 0) { console.log(PREFIX + " SSE p-values:", JSON.stringify(pKeys), JSON.stringify(pTracker)); }\n' +
     '            return;\n' +
     '          }\n' +
@@ -263,11 +356,11 @@ if (isChatPage) {
     '              for (var i = 0; i < lines.length; i++) { window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, pTracker); }\n' +
     '            }\n' +
     '          }\n' +
-    '          lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, false, lastLens.thinkingLen, lastLens.responseLen);\n' +
+    '          lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, false, lastLens.thinkingLen, lastLens.responseLen, pTracker);\n' +
     '          pump();\n' +
     '        }).catch(function(err) {\n' +
     '          console.error(PREFIX + " Stream error:", err);\n' +
-    '          lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true, lastLens.thinkingLen, lastLens.responseLen);\n' +
+    '          lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true, lastLens.thinkingLen, lastLens.responseLen, pTracker);\n' +
     '        });\n' +
     '      }\n' +
     '      pump();\n' +
@@ -291,19 +384,30 @@ if (isChatPage) {
     '      var responseAcc = { val: "" };\n' +
     '      var lastProcessedLen = 0;\n' +
     '      var lastLens = { thinkingLen: 0, responseLen: 0 };\n' +
+    '      var xhrBuffer = "";\n' +
+    '      var xhrPTracker = {};\n' +
     '      this.addEventListener("readystatechange", function() {\n' +
     '        try {\n' +
     '          if (this.readyState === 3 || this.readyState === 4) {\n' +
     '            var rt = this.responseText || "";\n' +
     '            var newText = rt.substring(lastProcessedLen);\n' +
     '            lastProcessedLen = rt.length;\n' +
-    '            if (newText) {\n' +
-    '              var lines = newText.split("\\n");\n' +
-    '              for (var i = 0; i < lines.length; i++) { window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, null); }\n' +
-    '              lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, this.readyState === 4, lastLens.thinkingLen, lastLens.responseLen);\n' +
-    '            } else if (this.readyState === 4) {\n' +
-    '              window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true, lastLens.thinkingLen, lastLens.responseLen);\n' +
+    '            xhrBuffer += newText;\n' +
+    '            var idx;\n' +
+    '            while ((idx = xhrBuffer.indexOf("\\n\\n")) !== -1) {\n' +
+    '              var eventText = xhrBuffer.substring(0, idx);\n' +
+    '              xhrBuffer = xhrBuffer.substring(idx + 2);\n' +
+    '              if (eventText.trim()) {\n' +
+    '                var lines = eventText.split("\\n");\n' +
+    '                for (var i = 0; i < lines.length; i++) { window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, xhrPTracker); }\n' +
+    '              }\n' +
     '            }\n' +
+    '            if (this.readyState === 4 && xhrBuffer.trim()) {\n' +
+    '              var lines = xhrBuffer.split("\\n");\n' +
+    '              for (var i = 0; i < lines.length; i++) { window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, xhrPTracker); }\n' +
+    '              xhrBuffer = "";\n' +
+    '            }\n' +
+    '            lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, this.readyState === 4, lastLens.thinkingLen, lastLens.responseLen, xhrPTracker);\n' +
     '          }\n' +
     '        } catch(e) {}\n' +
     '      });\n' +
