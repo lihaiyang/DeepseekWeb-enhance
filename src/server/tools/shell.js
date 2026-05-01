@@ -171,7 +171,7 @@ function listDirectory(dirPath) {
   }
 }
 
-function readFile(filePath, encoding = 'utf-8', maxBytes = 1048576) {
+function readFile(filePath, encoding = 'utf-8', maxBytes = 1048576, startLine = 1, lineCount = 200) {
   try {
     const resolved = validatePath(filePath);
     if (!fs.existsSync(resolved)) return `错误：文件不存在 — ${resolved}`;
@@ -179,10 +179,27 @@ function readFile(filePath, encoding = 'utf-8', maxBytes = 1048576) {
 
     const size = fs.statSync(resolved).size;
     if (size > maxBytes) {
-      return `错误：文件过大（${size.toLocaleString()} 字节，限制 ${maxBytes.toLocaleString()} 字节）。请增大 max_bytes 参数或读取部分内容`;
+      return `错误：文件过大（${size.toLocaleString()} 字节，限制 ${maxBytes.toLocaleString()} 字节）。请增大 max_bytes 参数或使用 start_line/line_count 分段读取`;
     }
 
-    return fs.readFileSync(resolved, { encoding });
+    const raw = fs.readFileSync(resolved, { encoding });
+    const lines = raw.split('\n');
+    const totalLines = lines.length;
+
+    // startLine is 1-based
+    const startIdx = Math.max(0, startLine - 1);
+    const endIdx = Math.min(totalLines, startIdx + lineCount);
+    const selected = lines.slice(startIdx, endIdx);
+    let content = selected.join('\n');
+
+    // Add truncation notice
+    if (endIdx < totalLines) {
+      content += `\n\n[文件共 ${totalLines.toLocaleString()} 行，以上为第 ${startLine}-${endIdx} 行。使用 start_line=${endIdx + 1} 继续读取后续内容]`;
+    } else if (startLine > 1) {
+      content += `\n\n[文件共 ${totalLines.toLocaleString()} 行，以上为第 ${startLine}-${endIdx} 行（文件末尾）]`;
+    }
+
+    return content;
   } catch (err) {
     if (err.code === 'ENOENT') return `错误：文件不存在 — ${filePath}`;
     return `读取文件失败: ${err.message}`;
@@ -349,13 +366,15 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'read_file',
-    description: '读取工作区内指定文件的内容',
+    description: '读取工作区内指定文件的内容。大文件会自动分段，默认读取前 200 行。使用 start_line 和 line_count 参数可以读取文件的任意部分。',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: '要读取的文件路径' },
         encoding: { type: 'string', description: '文件编码（默认: utf-8）' },
-        max_bytes: { type: 'integer', description: '最大读取字节数（默认 1048576）' },
+        start_line: { type: 'integer', description: '从第几行开始读取，1 表示第一行（默认: 1）' },
+        line_count: { type: 'integer', description: '读取多少行（默认: 200）' },
+        max_bytes: { type: 'integer', description: '文件大小上限，超过此大小的文件拒绝读取（默认 1048576 = 1MB）' },
       },
       required: ['path'],
     },
@@ -413,7 +432,7 @@ const HANDLERS = {
       const rawPath = (args.path || '').toString().trim();
       return listDirectory(rawPath || WORKSPACE_ROOT);
     },
-    read_file: (args) => readFile(args.path || '', args.encoding || 'utf-8', args.max_bytes || 1048576),
+    read_file: (args) => readFile(args.path || '', args.encoding || 'utf-8', args.max_bytes || 1048576, args.start_line || 1, args.line_count || 200),
     write_file: (args) => writeFile(args.path || '', args.content || '', args.encoding || 'utf-8'),
     edit_file: (args) => editFile(args.path || '', args.old_string || '', args.new_string || '', args.replace_all || false),
     search_in_files: (args) => searchInFiles(args.pattern || '', args.directory || '.', args.file_pattern || '*', args.max_results || 50),
