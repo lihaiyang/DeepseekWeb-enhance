@@ -850,46 +850,49 @@
 
   // ─── Tool Call Detection ───────────────────────────────────
 
+  /**
+   * Detect genuine tool calls in the AI response.
+   *
+   * Strategy: real tool calls are always the LAST thing in the response.
+   * If there's any text after the last ```mcp:...``` block, the calls are
+   * just examples in an explanation — ignore them.
+   */
   function checkForToolCalls(content) {
     if (!content || !toolRegistry.length) return [];
 
-    const calls = [];
     const re = new RegExp(TOOL_CALL_RE.source, 'g');
+    const matches = [];
     let match;
     while ((match = re.exec(content)) !== null) {
-      const toolName = match[1];
-      const rawArgs = match[2].trim();
-      let args = {};
-      try { args = JSON.parse(rawArgs); }
-      catch { args = { input: rawArgs }; }
-
-      const key = toolName + ':' + JSON.stringify(args);
-      if (executedCalls.has(key)) continue;
-      executedCalls.add(key);
-      calls.push({ name: toolName, args });
+      matches.push({
+        name: match[1],
+        rawArgs: match[2].trim(),
+        endIndex: match.index + match[0].length,
+      });
     }
 
-    // Flex match for SSE token boundary truncation
-    for (const tool of toolRegistry) {
-      const name = tool.name;
-      const idx = content.indexOf(name);
-      if (idx === -1) continue;
+    if (matches.length === 0) return [];
 
-      const afterName = content.substring(idx + name.length);
-      const braceStart = afterName.indexOf('{');
-      if (braceStart === -1) continue;
-      const braceEnd = afterName.indexOf('}', braceStart);
-      if (braceEnd === -1) continue;
+    // Check if there's meaningful text after the last tool call block.
+    // If yes, these are just examples in an explanation — don't execute.
+    const lastEnd = matches[matches.length - 1].endIndex;
+    const afterLast = content.substring(lastEnd).trim();
+    if (afterLast.length > 0) {
+      console.log(`${PREFIX} Tool calls found but followed by text ("${afterLast.substring(0, 50)}..."), treating as examples`);
+      return [];
+    }
 
-      const jsonStr = afterName.substring(braceStart, braceEnd + 1);
+    // Genuine tool calls — parse args and dedup
+    const calls = [];
+    for (const m of matches) {
       let args = {};
-      try { args = JSON.parse(jsonStr); }
-      catch { args = { input: jsonStr }; }
+      try { args = JSON.parse(m.rawArgs); }
+      catch { args = { input: m.rawArgs }; }
 
-      const key = name + ':' + JSON.stringify(args);
+      const key = m.name + ':' + JSON.stringify(args);
       if (executedCalls.has(key)) continue;
       executedCalls.add(key);
-      calls.push({ name, args });
+      calls.push({ name: m.name, args });
     }
 
     return calls;
