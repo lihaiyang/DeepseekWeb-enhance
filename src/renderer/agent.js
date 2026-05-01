@@ -87,6 +87,17 @@
     });
     headerActions.appendChild(modeBtn);
 
+    // New conversation button
+    const newChatBtn = document.createElement('button');
+    newChatBtn.id = 'ds-agent-new-chat';
+    newChatBtn.title = '新建会话';
+    newChatBtn.textContent = '➕';
+    newChatBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      newConversation();
+    });
+    headerActions.appendChild(newChatBtn);
+
     // Stop agent button
     const stopBtn = document.createElement('button');
     stopBtn.id = 'ds-agent-stop';
@@ -1061,6 +1072,167 @@
     }
   }
 
+  async function newConversation() {
+    // Stop any running agent loop first
+    stopAgentLoop();
+
+    // Clear panel UI
+    if (messagesContainer) messagesContainer.innerHTML = '';
+    if (stepsContainer) stepsContainer.innerHTML = '';
+    currentAiBubble = null;
+    currentAiContent = '';
+    currentThinkingBubble = null;
+    currentThinkingContent = '';
+    lastStreamType = null;
+    executedCalls.clear();
+    agentStepCount = 0;
+
+    // Click DeepSeek's "new chat" button in the sidebar (SPA navigation, no reload)
+    let clicked = false;
+
+    // Strategy 1: search ALL elements (no visibility filter) for "开启新会话" in text or attributes
+    const keywords = ['开启新会话', '新对话', 'New Chat', 'New chat', 'new chat'];
+    const allEls = document.querySelectorAll('*');
+    const candidates = [];
+    for (const el of allEls) {
+      // Skip our own agent panel
+      if (el.closest('#ds-agent-panel')) continue;
+      const text = (el.textContent || '').trim();
+      const aria = (el.getAttribute('aria-label') || '');
+      const title = (el.getAttribute('title') || '');
+      const combined = text + ' ' + aria + ' ' + title;
+      for (const kw of keywords) {
+        if (combined.includes(kw)) {
+          candidates.push({
+            el,
+            tag: el.tagName.toLowerCase(),
+            cls: (el.className || '').toString().substring(0, 40),
+            text: text.substring(0, 60),
+            aria: aria.substring(0, 40),
+            title: title.substring(0, 40),
+            visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length),
+          });
+          break;
+        }
+      }
+    }
+    console.log(PREFIX + ' newConversation candidates (' + candidates.length + '):',
+      candidates.map(c => ({ tag: c.tag, cls: c.cls, text: c.text, aria: c.aria, title: c.title, visible: c.visible })));
+
+    if (candidates.length > 0) {
+      // Sort by text length ascending (most specific first)
+      candidates.sort((a, b) => a.text.length - b.text.length);
+      let target = candidates[0].el;
+
+      // Walk up to find a clickable ancestor
+      let clickable = target;
+      while (clickable && clickable !== document.body) {
+        const tag = clickable.tagName.toLowerCase();
+        const role = clickable.getAttribute('role');
+        if (tag === 'button' || tag === 'a' || role === 'button' ||
+            clickable.onclick || getComputedStyle(clickable).cursor === 'pointer') {
+          break;
+        }
+        clickable = clickable.parentElement;
+      }
+      if (clickable && clickable !== document.body) {
+        clickable.click();
+        clicked = true;
+        console.log(PREFIX + ' New conversation clicked:', clickable.tagName, clickable.className);
+      } else {
+        target.click();
+        clicked = true;
+        console.log(PREFIX + ' New conversation clicked span directly');
+      }
+    }
+
+    // Strategy 2: try common selectors
+    if (!clicked) {
+      const selectors = [
+        '[data-testid="new_chat_button"]',
+        '[class*="new-chat"]',
+        '[class*="new_chat"]',
+        '[class*="sidebar"] [class*="new"]',
+        'nav button:first-of-type',
+        '[role="navigation"] button:first-of-type',
+        'aside button:first-of-type',
+      ];
+      for (const sel of selectors) {
+        try {
+          const btn = document.querySelector(sel);
+          if (btn) {
+            btn.click();
+            clicked = true;
+            console.log(PREFIX + ' New conversation via selector: ' + sel);
+            break;
+          }
+        } catch (e) { /* selector not supported */ }
+      }
+    }
+
+    // Strategy 3: find sidebar container, click its first button/clickable child
+    if (!clicked) {
+      const sidebarSelectors = [
+        '[class*="sidebar"]', '[class*="side-bar"]', '[class*="Sidebar"]',
+        'nav', '[role="navigation"]', 'aside',
+        '[class*="left"]', '[class*="drawer"]',
+      ];
+      for (const ss of sidebarSelectors) {
+        try {
+          const sidebar = document.querySelector(ss);
+          if (!sidebar || sidebar.closest('#ds-agent-panel')) continue;
+          // Find first button, a, or [role="button"] inside
+          const btn = sidebar.querySelector('button, a, [role="button"], [class*="new"]');
+          if (btn) {
+            btn.click();
+            clicked = true;
+            console.log(PREFIX + ' New conversation via sidebar first-child in', ss, ':', btn.tagName, btn.className);
+            break;
+          }
+        } catch (e) { /* skip */ }
+      }
+    }
+
+    if (!clicked) {
+      console.warn(PREFIX + ' Could not find new-chat button');
+      addMessage('tool-error', '未找到新建会话按钮，请手动点击侧边栏的"开启新会话"');
+    }
+
+    // After creating new conversation, ensure expert mode is selected
+    if (clicked) {
+      setTimeout(() => selectExpertMode(), 500);
+    }
+  }
+
+  // ─── Expert Mode Selection ──────────────────────────────────
+
+  function selectExpertMode() {
+    const allEls = document.querySelectorAll('*');
+    for (const el of allEls) {
+      if (el.closest('#ds-agent-panel')) continue;
+      const text = (el.textContent || '').trim();
+      // Find the "专家模式" element (likely a button or span)
+      if (text === '专家模式') {
+        // Check if already selected (parent or self has active/selected class)
+        let node = el;
+        while (node && node !== document.body) {
+          const cls = (node.className || '').toString();
+          if (cls.includes('active') || cls.includes('selected') || cls.includes('current') ||
+              node.getAttribute('aria-pressed') === 'true' || node.getAttribute('aria-selected') === 'true') {
+            console.log(PREFIX + ' Expert mode already selected');
+            return;
+          }
+          node = node.parentElement;
+        }
+        // Click to select expert mode
+        el.click();
+        console.log(PREFIX + ' Expert mode selected');
+        return;
+      }
+    }
+    console.log(PREFIX + ' Expert mode button not found');
+  }
+
   // ─── Keyboard Shortcuts ────────────────────────────────────
 
   function setupKeyboardShortcuts() {
@@ -1090,6 +1262,11 @@
         if (panelMode === 'full') {
           toggleShowWeb();
         }
+      }
+      // Ctrl+Shift+N: new conversation
+      if (e.ctrlKey && e.shiftKey && e.key === 'N') {
+        e.preventDefault();
+        newConversation();
       }
     });
   }
@@ -1163,6 +1340,9 @@
     setupKeyboardShortcuts();
 
     console.log(`${PREFIX} Ready — ${toolRegistry.length} tools available, mode: ${panelMode}`);
+
+    // Select expert mode on startup (delayed to let DeepSeek UI render)
+    setTimeout(() => selectExpertMode(), 1000);
   }
 
   // ─── Entry Point ───────────────────────────────────────────
