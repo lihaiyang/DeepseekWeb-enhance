@@ -26,7 +26,6 @@
   let agentRunning = false;
   let agentAbortController = null;
   let executedCalls = new Set();
-  let toolFiles = [];
   let agentStepCount = 0;
   let currentToolHint = '';
   let panelMode = 'compact';        // compact | half | full
@@ -971,16 +970,6 @@
                 isError ? '❌ 执行失败' : '✅ 执行成功',
                 String(resultText)
               );
-            }
-
-            // Handle file results
-            if (!isError && (call.name === 'read_file' || call.name === 'list_directory')) {
-              const filename = (call.args.path || 'tool_result.txt').split('/').pop().split('\\').pop();
-              toolFiles.push({ filename, text: resultText, mimeType: 'text/plain' });
-              window.__dsAgentToolFiles = toolFiles;
-              if (panelMode === 'half' || panelMode === 'full') {
-                addToolStepInline('thinking', '📁 文件上下文', `${filename} 已添加到文件列表`);
-              }
             }
 
             // Collect result (send later as batch)

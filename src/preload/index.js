@@ -167,7 +167,6 @@ if (isChatPage) {
     '  var _origXHROpen = XMLHttpRequest.prototype.open;\n' +
     '  var _origXHRSend = XMLHttpRequest.prototype.send;\n' +
     '  window.__dsAgentToolHint = "";\n' +
-    '  window.__dsAgentToolFiles = [];\n' +
     '\n' +
     '  function modifyRequestBody(bodyStr) {\n' +
     '    if (!bodyStr) return bodyStr;\n' +
