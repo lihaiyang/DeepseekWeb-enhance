@@ -29,7 +29,7 @@
   let agentStepCount = 0;
   let currentToolHint = '';
   let panelMode = 'full';           // compact | half | full
-  let panelVisible = true;
+  let panelVisible = false;          // Start hidden, show after login detected
   let currentAiBubble = null;       // Reference to AI message bubble being streamed
   let currentAiContent = '';        // Accumulated AI response text
   let currentThinkingBubble = null; // Reference to thinking bubble
@@ -186,6 +186,11 @@
 
     // Set initial mode
     applyPanelMode();
+
+    // Start hidden if panelVisible is false (login-first flow)
+    if (!panelVisible) {
+      hidePanel();
+    }
   }
 
   // ─── CSS Styles ──────────────────────────────────────────────
@@ -1171,6 +1176,8 @@
           if (cls.includes('active') || cls.includes('selected') || cls.includes('current') ||
               node.getAttribute('aria-pressed') === 'true' || node.getAttribute('aria-selected') === 'true') {
             console.log(PREFIX + ' Expert mode already selected');
+            // Still ensure web search is off
+            disableWebSearch();
             return;
           }
           node = node.parentElement;
@@ -1178,10 +1185,64 @@
         // Click to select expert mode
         el.click();
         console.log(PREFIX + ' Expert mode selected');
+        // After switching to expert mode, turn off web search
+        setTimeout(() => disableWebSearch(), 300);
         return;
       }
     }
     console.log(PREFIX + ' Expert mode button not found');
+  }
+
+  function disableWebSearch() {
+    const allEls = document.querySelectorAll('*');
+    for (const el of allEls) {
+      if (el.closest('#ds-agent-panel')) continue;
+      const text = (el.textContent || '').trim();
+      if (text === '智能搜索') {
+        // Walk up from the span to find the actual clickable toggle container
+        let toggle = el;
+        while (toggle && toggle !== document.body) {
+          const tag = toggle.tagName.toLowerCase();
+          const role = toggle.getAttribute('role');
+          const cls = (toggle.className || '').toString();
+          if (tag === 'button' || tag === 'label' ||
+              role === 'button' || role === 'switch' || role === 'checkbox' ||
+              cls.includes('toggle') || cls.includes('switch') ||
+              getComputedStyle(toggle).cursor === 'pointer') {
+            break;
+          }
+          toggle = toggle.parentElement;
+        }
+        const target = (toggle && toggle !== document.body) ? toggle : el;
+
+        // Check if currently ON — scan target and all its ancestors
+        let isOn = false;
+        let node = target;
+        while (node && node !== document.body) {
+          const cls = (node.className || '').toString();
+          const ariaPressed = node.getAttribute('aria-pressed');
+          const ariaChecked = node.getAttribute('aria-checked');
+          const dataState = node.getAttribute('data-state');
+          if (cls.includes('active') || cls.includes('selected') || cls.includes('checked') ||
+              cls.includes('--on') || cls.includes('--enabled') ||
+              ariaPressed === 'true' || ariaChecked === 'true' ||
+              dataState === 'on' || dataState === 'checked' || dataState === 'active') {
+            isOn = true;
+            break;
+          }
+          node = node.parentElement;
+        }
+
+        if (isOn) {
+          target.click();
+          console.log(PREFIX + ' Web search disabled via <' + target.tagName.toLowerCase() + '>', target.className);
+        } else {
+          console.log(PREFIX + ' Web search already off (target: <' + target.tagName.toLowerCase() + '>', target.className + ')');
+        }
+        return;
+      }
+    }
+    console.log(PREFIX + ' Web search button not found');
   }
 
   // ─── Keyboard Shortcuts ────────────────────────────────────
@@ -1213,6 +1274,35 @@
         newConversation();
       }
     });
+  }
+
+  // ─── Login Detection ────────────────────────────────────────
+
+  function waitForLogin() {
+    const dom = window.__dsAgentDOM;
+    let attempts = 0;
+    const maxAttempts = 60; // 60 * 1s = 60s timeout
+    const checkInterval = 1000;
+
+    console.log(PREFIX + ' Waiting for DeepSeek login...');
+
+    const timer = setInterval(() => {
+      attempts++;
+      try {
+        const input = dom?.findInputElement?.();
+        if (input) {
+          clearInterval(timer);
+          console.log(PREFIX + ' Login detected after ' + attempts + 's, showing panel');
+          showPanel();
+          return;
+        }
+      } catch (e) { /* dom not ready yet */ }
+
+      if (attempts >= maxAttempts) {
+        clearInterval(timer);
+        console.log(PREFIX + ' Login not detected within ' + maxAttempts + 's, panel stays hidden');
+      }
+    }, checkInterval);
   }
 
   // ─── Init ──────────────────────────────────────────────────
@@ -1257,6 +1347,9 @@
 
     // 1. Create UI
     createPanel();
+
+    // 1.5 Wait for DeepSeek login, then auto-show panel
+    waitForLogin();
 
     // 2. Check tool handler connection
     try {
