@@ -28,7 +28,7 @@
   let executedCalls = new Set();
   let agentStepCount = 0;
   let currentToolHint = '';
-  let panelMode = 'compact';        // compact | half | full
+  let panelMode = 'full';           // compact | half | full
   let panelVisible = true;
   let currentAiBubble = null;       // Reference to AI message bubble being streamed
   let currentAiContent = '';        // Accumulated AI response text
@@ -63,18 +63,6 @@
 
     const headerActions = document.createElement('div');
     headerActions.id = 'ds-agent-header-actions';
-
-    // Show web button (only visible in full mode)
-    const showWebBtn = document.createElement('button');
-    showWebBtn.id = 'ds-agent-show-web';
-    showWebBtn.title = '显示 DeepSeek 网页';
-    showWebBtn.textContent = '🌐';
-    showWebBtn.style.display = 'none';
-    showWebBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleShowWeb();
-    });
-    headerActions.appendChild(showWebBtn);
 
     // Mode toggle button
     const modeBtn = document.createElement('button');
@@ -231,13 +219,6 @@
         border-radius: 0;
       }
       #ds-agent-panel.closed { display: none; }
-      #ds-agent-panel.web-visible {
-        opacity: 0.12; pointer-events: none;
-        transition: opacity 0.2s ease;
-      }
-      #ds-agent-panel.web-visible #ds-agent-header {
-        pointer-events: auto;
-      }
 
       /* ===== Header ===== */
       #ds-agent-header {
@@ -430,7 +411,7 @@
 
       /* ===== FAB ===== */
       #ds-agent-fab {
-        position: fixed; bottom: 20px; right: 20px; z-index: 99998;
+        position: fixed; top: 20px; right: 20px; z-index: 99998;
         width: 44px; height: 44px; border-radius: 50%;
         background: #313244; color: #cdd6f4; border: none; cursor: pointer;
         font-size: 20px; box-shadow: 0 4px 16px rgba(0,0,0,0.3);
@@ -503,12 +484,6 @@
       modeBtn.textContent = icons[panelMode] || '⧉';
     }
 
-    // Show/hide web button
-    const showWebBtn = document.getElementById('ds-agent-show-web');
-    if (showWebBtn) {
-      showWebBtn.style.display = panelMode === 'full' ? '' : 'none';
-    }
-
     // Scroll messages to bottom
     if (messagesContainer) {
       setTimeout(() => {
@@ -536,30 +511,6 @@
     if (fabButton) fabButton.style.display = 'block';
     panelVisible = false;
   }
-
-  // ─── Show/Hide DeepSeek Webpage ──────────────────────────────
-
-  let webVisible = false;
-
-  function toggleShowWeb() {
-    webVisible = !webVisible;
-    if (webVisible) {
-      panel.classList.add('web-visible');
-      document.getElementById('ds-agent-show-web').textContent = '🔲';
-      document.getElementById('ds-agent-show-web').title = '返回 Agent 面板';
-    } else {
-      panel.classList.remove('web-visible');
-      document.getElementById('ds-agent-show-web').textContent = '🌐';
-      document.getElementById('ds-agent-show-web').title = '显示 DeepSeek 网页';
-    }
-  }
-
-  // Listen for Escape to restore panel
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && webVisible && panelMode === 'full') {
-      toggleShowWeb();
-    }
-  });
 
   // ─── Message Display ─────────────────────────────────────────
 
@@ -1255,13 +1206,6 @@
       if (e.ctrlKey && e.shiftKey && e.key === 'S') {
         e.preventDefault();
         stopAgentLoop();
-      }
-      // Ctrl+Shift+W: show/hide web (in full mode)
-      if (e.ctrlKey && e.shiftKey && e.key === 'W') {
-        e.preventDefault();
-        if (panelMode === 'full') {
-          toggleShowWeb();
-        }
       }
       // Ctrl+Shift+N: new conversation
       if (e.ctrlKey && e.shiftKey && e.key === 'N') {
