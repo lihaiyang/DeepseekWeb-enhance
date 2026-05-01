@@ -769,24 +769,25 @@
       placeholder.id = 'ds-agent-placeholder';
     }
 
-    // Inject into DeepSeek input and send
-    const deepseekInput = findInputElement();
-    if (!deepseekInput) {
-      addMessage('tool-error', '无法找到 DeepSeek 输入框，请显示网页后手动输入');
+    // Send via adapter — handles DOM injection and SSE streaming
+    const adapter = window.__dsAgentAdapter;
+    if (!adapter) {
+      addMessage('tool-error', 'Adapter 未初始化');
       return;
     }
 
-    setInputValue(deepseekInput, text);
-    await sleep(300);
-
-    const sendBtn = findSendButton();
-    if (sendBtn) {
-      sendBtn.click();
-      console.log(PREFIX + ' User message sent via DeepSeek');
-    } else {
-      deepseekInput.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true,
-      }));
+    try {
+      const fullResponse = await adapter.sendMessage(text);
+      // Response bubbles are updated in real-time by onThinking/onContent callbacks
+      // Check for tool calls and start agent loop if needed
+      const calls = checkForToolCalls(fullResponse || '');
+      if (calls.length > 0) {
+        console.log(PREFIX + ' Detected ' + calls.length + ' tool call(s) from user message');
+        await runAgenticLoop(calls);
+      }
+    } catch (err) {
+      console.error(PREFIX + ' sendUserMessage failed:', err);
+      addMessage('tool-error', '发送失败: ' + (err.message || '未知错误'));
     }
 
     // Update connection status
@@ -1001,42 +1002,16 @@
           combinedResult += '</tool_result>\n\n';
         }
 
-        // ── True multi-round agentic loop ──
-        // Set waiting flag BEFORE sending results, so the preload's
-        // _fireStreamCallbacks knows to resolve our promise instead of
-        // calling runAgenticLoop again.
-        window.__dsAgentLoopWaiting = true;
-        window.__dsAgentFinalResponse = '';
-
-        var streamResolve;
-        window.__dsAgentStreamPromise = new Promise(function (resolve) {
-          streamResolve = resolve;
-        });
-        window.__dsAgentStreamResolve = streamResolve;
-
-        // Send all results as a single batched message (triggers exactly one SSE stream)
-        await injectTextToChat(combinedResult);
-
-        // Wait for SSE stream with a generous timeout
-        var STREAM_TIMEOUT_MS = 1800000; // 30 minutes
-        var timedOut = false;
-        var timeoutId = setTimeout(function () {
-          timedOut = true;
-          if (streamResolve) streamResolve();
-        }, STREAM_TIMEOUT_MS);
-
+        // ── Send results and wait for AI response via adapter ──
+        var finalResponse;
         try {
-          await window.__dsAgentStreamPromise;
-        } finally {
-          clearTimeout(timeoutId);
-          window.__dsAgentLoopWaiting = false;
-        }
-
-        if (timedOut) {
-          console.log(PREFIX + ' SSE stream wait timed out, stopping agent loop');
-          addStep('thinking', '⏰ 超时', '等待 AI 响应超时，Agent 循环终止');
+          finalResponse = await window.__dsAgentAdapter.sendMessage(combinedResult);
+        } catch (err) {
+          if (agentAbortController.signal.aborted) break;
+          console.log(PREFIX + ' Adapter sendMessage failed: ' + err.message);
+          addStep('thinking', '❌ 发送失败', err.message);
           if (panelMode === 'half' || panelMode === 'full') {
-            addToolStepInline('thinking', '⏰ 超时', '等待 AI 响应超时，Agent 循环终止');
+            addToolStepInline('thinking', '❌ 发送失败', err.message);
           }
           break;
         }
@@ -1044,9 +1019,8 @@
         if (agentAbortController.signal.aborted) break;
 
         // Check the final AI response for new tool calls
-        var finalResponse = window.__dsAgentFinalResponse || '';
         executedCalls.clear(); // Reset dedup for the new round
-        pendingCalls = checkForToolCalls(finalResponse);
+        pendingCalls = checkForToolCalls(finalResponse || '');
 
         if (pendingCalls.length === 0) {
           console.log(PREFIX + ' No more tool calls detected, agent loop complete');
@@ -1065,7 +1039,6 @@
     } finally {
       agentRunning = false;
       agentAbortController = null;
-      window.__dsAgentLoopWaiting = false; // Safety: ensure waiting flag is cleared
       updateStatus('ds-agent-loop-status', '空闲');
       const stopBtn2 = document.getElementById('ds-agent-stop');
       if (stopBtn2) stopBtn2.style.display = 'none';
@@ -1077,9 +1050,9 @@
       agentAbortController.abort();
       agentRunning = false;
 
-      // Resolve any waiting stream promise so the loop can exit cleanly
-      if (window.__dsAgentLoopWaiting && typeof window.__dsAgentStreamResolve === 'function') {
-        window.__dsAgentStreamResolve();
+      // Abort any pending adapter operation
+      if (window.__dsAgentAdapter) {
+        window.__dsAgentAdapter.abort();
       }
 
       updateStatus('ds-agent-loop-status', '⏹ 已停止');
@@ -1088,108 +1061,6 @@
         addToolStepInline('thinking', '⏹ 已停止', '用户手动停止了 Agent');
       }
     }
-  }
-
-  // ─── Result Injection ──────────────────────────────────────
-
-  // Send raw text into the DeepSeek chat (no wrapping — used for batched results)
-  async function injectTextToChat(text) {
-    const input = findInputElement();
-    if (!input) {
-      console.error(`${PREFIX} Cannot find input element`);
-      return;
-    }
-
-    input.focus();
-    await sleep(200);
-    setInputValue(input, text);
-    await sleep(300);
-
-    const sendBtn = findSendButton();
-    if (sendBtn) {
-      sendBtn.click();
-      console.log(`${PREFIX} Batched tool results injected and sent`);
-    } else {
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-    }
-
-    await sleep(500);
-  }
-
-  // Legacy: inject a single tool result (kept for potential external use)
-  async function injectToolResult(toolName, resultText, isError) {
-    const wrappedText = `<tool_result>\n${isError ? 'Error: ' : ''}${resultText}\n</tool_result>`;
-    await injectTextToChat(wrappedText);
-  }
-
-  // ─── DOM Helpers ───────────────────────────────────────────
-
-  function findInputElement() {
-    for (const ta of document.querySelectorAll('textarea')) {
-      if (isVisible(ta)) return ta;
-    }
-    const editables = document.querySelectorAll('[contenteditable="true"]');
-    for (const el of editables) {
-      if (isVisible(el) && el.getAttribute('placeholder')) return el;
-    }
-    for (const el of editables) {
-      if (isVisible(el)) return el;
-    }
-    return null;
-  }
-
-  function findSendButton() {
-    const selectors = [
-      'button[aria-label*="send"]', 'button[aria-label*="Send"]',
-      'button[aria-label*="发送"]', 'button[aria-label*="Submit"]',
-      'button[type="submit"]',
-    ];
-    for (const sel of selectors) {
-      const btn = document.querySelector(sel);
-      if (btn && isVisible(btn)) return btn;
-    }
-    return null;
-  }
-
-  function isVisible(el) {
-    return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-  }
-
-  function setInputValue(element, value) {
-    const isCE = element.contentEditable === 'true';
-
-    if (isCE) {
-      element.focus();
-      const sel = window.getSelection();
-      const range = document.createRange();
-      range.selectNodeContents(element);
-      sel.removeAllRanges();
-      sel.addRange(range);
-
-      try { document.execCommand('insertText', false, value); }
-      catch { element.textContent = value; }
-
-      range.selectNodeContents(element);
-      range.collapse(false);
-      sel.removeAllRanges();
-      sel.addRange(range);
-    } else {
-      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-        window.HTMLTextAreaElement.prototype, 'value'
-      )?.set;
-      if (nativeInputValueSetter) {
-        nativeInputValueSetter.call(element, value);
-      } else {
-        element.value = value;
-      }
-    }
-
-    element.dispatchEvent(new InputEvent('input', { bubbles: true }));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-
-  function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   // ─── Keyboard Shortcuts ────────────────────────────────────
@@ -1225,53 +1096,45 @@
     });
   }
 
-  // ─── Streaming Content Callbacks ─────────────────────────────
-
-  function onThinking(delta) {
-    if (!messagesContainer) return;
-    // Remove placeholder if still present (before first AI bubble is created)
-    if (!currentAiBubble) {
-      const placeholder = document.getElementById('ds-agent-placeholder');
-      if (placeholder) placeholder.remove();
-    }
-    // If switching from response back to thinking, finalize the previous AI bubble
-    // so the next thinking round gets a fresh thinking bubble.
-    if (lastStreamType === 'response' && currentAiBubble) {
-      finalizeAiBubble();
-    }
-    lastStreamType = 'thinking';
-    addThinkingBubble(delta);
-  }
-
-  function onStreamContent(delta) {
-    if (!messagesContainer) return;
-    // If switching from thinking to response, finalize the previous thinking bubble
-    // so the next response round gets a fresh AI bubble.
-    if (lastStreamType === 'thinking' && currentThinkingBubble) {
-      finalizeThinkingBubble();
-    }
-    lastStreamType = 'response';
-    updateAiBubble(delta);
-  }
-
   // ─── Init ──────────────────────────────────────────────────
 
   async function init() {
     console.log(`${PREFIX} v${VERSION} initializing...`);
 
-    // Register callbacks IMMEDIATELY so early network hooks can use them.
-    // Callbacks are safe before panel creation — they check messagesContainer.
-    window.__dsAgentCheckToolCalls = checkForToolCalls;
-    window.__dsAgentRunLoop = runAgenticLoop;
-    window.__dsAgentOnThinking = onThinking;
-    window.__dsAgentOnStreamContent = onStreamContent;
-    console.log(`${PREFIX} Network hook callbacks registered early`);
+    // Create DeepSeek adapter — unified interface for all chat interactions
+    const adapter = new DeepSeekAdapter();
+    window.__dsAgentAdapter = adapter;
+
+    // Register streaming callbacks on the adapter (replaces old onThinking/onStreamContent)
+    adapter.onThinking(function (delta) {
+      if (!messagesContainer) return;
+      if (!currentAiBubble) {
+        const placeholder = document.getElementById('ds-agent-placeholder');
+        if (placeholder) placeholder.remove();
+      }
+      if (lastStreamType === 'response' && currentAiBubble) {
+        finalizeAiBubble();
+      }
+      lastStreamType = 'thinking';
+      addThinkingBubble(delta);
+    });
+
+    adapter.onContent(function (delta) {
+      if (!messagesContainer) return;
+      if (lastStreamType === 'thinking' && currentThinkingBubble) {
+        finalizeThinkingBubble();
+      }
+      lastStreamType = 'response';
+      updateAiBubble(delta);
+    });
+
+    console.log(`${PREFIX} Adapter created and callbacks registered`);
 
     if (document.readyState !== 'complete') {
       await new Promise(resolve => window.addEventListener('load', resolve));
     }
 
-    await sleep(1000);
+    await new Promise(resolve => setTimeout(resolve, 1000));
 
     // 1. Create UI
     createPanel();
@@ -1298,9 +1161,7 @@
       console.log(`${PREFIX} Could not read max_steps config, using default ${maxAgentLoops}`);
     }
 
-    // 4. Callbacks already registered early (before async delay) — see top of init()
-
-    // 5. Setup keyboard shortcuts
+    // 4. Setup keyboard shortcuts
     setupKeyboardShortcuts();
 
     console.log(`${PREFIX} Ready — ${toolRegistry.length} tools available, mode: ${panelMode}`);
