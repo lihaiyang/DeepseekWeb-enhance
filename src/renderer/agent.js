@@ -30,6 +30,14 @@
   let currentToolHint = '';
   let panelMode = 'full';           // compact | half | full
   let panelVisible = false;          // Start hidden, show after login detected
+  let contextPanel = null;           // Right-side context panel
+  let contextTab = 'files';          // 'files' | 'preview' | 'stats'
+  let fileTreeData = null;           // Cached file tree from list_dir
+  let workspacePath = '';            // Current workspace path
+  let previewFilePath = '';          // Current file being previewed (full path)
+  let previewContent = '';           // Content of previewed file
+  let totalInputChars = 0;           // Total chars sent to model (for token estimation)
+  let totalOutputChars = 0;          // Total chars received from model
   let currentAiBubble = null;       // Reference to AI message bubble being streamed
   let currentAiContent = '';        // Accumulated AI response text
   let currentThinkingBubble = null; // Reference to thinking bubble
@@ -155,6 +163,48 @@
     body.appendChild(messagesContainer);
     body.appendChild(statusContainer);
     body.appendChild(stepsContainer);
+
+    // Right context panel (visible in full mode)
+    contextPanel = document.createElement('div');
+    contextPanel.id = 'ds-agent-context-panel';
+    contextPanel.innerHTML = `
+      <div id="ds-agent-context-tabs">
+        <button class="ds-context-tab active" data-tab="files">📁 文件</button>
+        <button class="ds-context-tab" data-tab="preview">📄 预览</button>
+        <button class="ds-context-tab" data-tab="stats">📊 统计</button>
+      </div>
+      <div id="ds-agent-context-content">
+        <div class="ds-context-pane active" data-pane="files">
+          <div id="ds-agent-file-tree">
+            <div class="context-empty">等待 Agent 浏览文件...</div>
+          </div>
+        </div>
+        <div class="ds-context-pane" data-pane="preview">
+          <div id="ds-agent-file-preview">
+            <div class="context-empty">选择文件以预览内容</div>
+          </div>
+        </div>
+        <div class="ds-context-pane" data-pane="stats">
+          <div id="ds-agent-stats-panel"></div>
+        </div>
+      </div>
+    `;
+    body.appendChild(contextPanel);
+
+    // Wire up context tab clicks
+    setTimeout(() => {
+      const tabs = contextPanel.querySelectorAll('.ds-context-tab');
+      tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+          contextTab = tab.dataset.tab;
+          tabs.forEach(t => t.classList.remove('active'));
+          tab.classList.add('active');
+          const panes = contextPanel.querySelectorAll('.ds-context-pane');
+          panes.forEach(p => p.classList.remove('active'));
+          contextPanel.querySelector('[data-pane="' + contextTab + '"]')?.classList.add('active');
+        });
+      });
+    }, 0);
 
     // Input area (visible in half/full mode)
     inputArea = document.createElement('div');
@@ -414,6 +464,124 @@
       #ds-agent-send:hover { background: #74c7ec; }
       #ds-agent-send:disabled { opacity: 0.4; cursor: not-allowed; }
 
+      /* ===== Full mode: split layout ===== */
+      #ds-agent-panel.mode-full #ds-agent-body {
+        flex-direction: row;
+      }
+      #ds-agent-panel.mode-full #ds-agent-messages {
+        flex: 0 0 55%; max-width: 55%;
+        border-right: 1px solid #313244;
+      }
+
+      /* ===== Context Panel (right side, full mode only) ===== */
+      #ds-agent-context-panel {
+        display: none; flex: 1; flex-direction: column;
+        background: #181825; overflow: hidden; min-width: 0;
+      }
+      #ds-agent-panel.mode-full #ds-agent-context-panel {
+        display: flex;
+      }
+
+      /* Context tabs */
+      #ds-agent-context-tabs {
+        display: flex; flex-shrink: 0;
+        border-bottom: 1px solid #313244; background: #1e1e2e;
+      }
+      .ds-context-tab {
+        flex: 1; padding: 8px 4px; background: none; border: none;
+        color: #6c7086; cursor: pointer; font-size: 12px;
+        font-family: inherit; transition: all 0.15s;
+        border-bottom: 2px solid transparent;
+      }
+      .ds-context-tab:hover { color: #cdd6f4; background: #252535; }
+      .ds-context-tab.active {
+        color: #89b4fa; border-bottom-color: #89b4fa;
+      }
+
+      /* Context content */
+      #ds-agent-context-content {
+        flex: 1; overflow: hidden; position: relative;
+      }
+      .ds-context-pane {
+        display: none; position: absolute; inset: 0;
+        overflow-y: auto; padding: 10px 12px;
+      }
+      .ds-context-pane.active { display: block; }
+      .context-empty {
+        color: #6c7086; font-size: 12px; text-align: center;
+        padding: 40px 20px;
+      }
+
+      /* File tree */
+      #ds-agent-file-tree { font-size: 12px; }
+      .file-tree-item {
+        padding: 3px 6px; cursor: pointer; border-radius: 4px;
+        color: #bac2de; display: flex; align-items: center; gap: 6px;
+        transition: background 0.1s; white-space: nowrap; overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .file-tree-item:hover { background: #252535; }
+      .file-tree-item.selected { background: #313244; color: #89b4fa; }
+      .file-tree-item.directory { color: #89b4fa; font-weight: 600; }
+      .file-tree-item .file-icon { font-size: 13px; flex-shrink: 0; }
+      .file-tree-children { padding-left: 14px; }
+
+      /* File preview */
+      #ds-agent-file-preview { font-size: 12px; }
+      .preview-header {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 6px 10px; background: #252535; border-radius: 6px;
+        margin-bottom: 8px; font-size: 11px; color: #a6adc8;
+      }
+      .preview-header .preview-filename {
+        font-weight: 600; color: #89b4fa; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap;
+      }
+      .preview-content {
+        font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+        font-size: 11px; line-height: 1.5; color: #cdd6f4;
+        white-space: pre-wrap; word-break: break-all;
+        background: #11111b; padding: 10px; border-radius: 6px;
+        max-height: calc(100vh - 160px); overflow-y: auto;
+      }
+      .preview-content .line-number {
+        color: #45475a; user-select: none; margin-right: 8px;
+        display: inline-block; width: 32px; text-align: right;
+      }
+
+      /* Stats panel */
+      #ds-agent-stats-panel { font-size: 12px; }
+      .stats-card {
+        background: #1e2030; border-radius: 8px; padding: 12px 14px;
+        margin-bottom: 10px;
+      }
+      .stats-card .stats-label {
+        color: #6c7086; font-size: 11px; margin-bottom: 6px;
+      }
+      .stats-card .stats-value {
+        font-size: 20px; font-weight: 700; color: #cdd6f4;
+      }
+      .stats-card .stats-sub {
+        font-size: 11px; color: #6c7086; margin-top: 2px;
+      }
+      .stats-progress {
+        margin-top: 8px; height: 6px; background: #313244;
+        border-radius: 3px; overflow: hidden;
+      }
+      .stats-progress-fill {
+        height: 100%; border-radius: 3px; transition: width 0.5s ease;
+      }
+      .stats-progress-fill.low { background: #a6e3a1; }
+      .stats-progress-fill.medium { background: #f9e2af; }
+      .stats-progress-fill.high { background: #f38ba8; }
+      .stats-row {
+        display: flex; justify-content: space-between; padding: 4px 0;
+        border-bottom: 1px solid #252535; font-size: 11px;
+      }
+      .stats-row:last-child { border-bottom: none; }
+      .stats-row .stats-row-label { color: #6c7086; }
+      .stats-row .stats-row-value { color: #cdd6f4; font-weight: 600; }
+
       /* ===== FAB ===== */
       #ds-agent-fab {
         position: fixed; top: 20px; right: 20px; z-index: 99998;
@@ -557,6 +725,7 @@
       // Finalize old AI bubble if it exists (keep it in DOM, just stop tracking)
       if (currentAiBubble) {
         currentAiBubble.classList.remove('streaming');
+        totalOutputChars += currentAiContent.length;
         currentAiBubble = null;
         currentAiContent = '';
       }
@@ -577,6 +746,7 @@
   function finalizeAiBubble() {
     if (currentAiBubble) {
       currentAiBubble.classList.remove('streaming');
+      totalOutputChars += currentAiContent.length;
     }
     currentAiBubble = null;
     currentAiContent = '';
@@ -714,6 +884,7 @@
 
     // Show user message in panel
     addMessage('user', text, '你');
+    totalInputChars += text.length;
     inputTextarea.value = '';
     inputTextarea.style.height = 'auto';
 
@@ -983,6 +1154,9 @@
 
         if (agentAbortController.signal.aborted) break;
 
+        // Finalize the AI bubble from this round so its content is tracked
+        finalizeAiBubble();
+
         // Check the final AI response for new tool calls
         executedCalls.clear(); // Reset dedup for the new round
         pendingCalls = checkForToolCalls(finalResponse || '');
@@ -1005,6 +1179,7 @@
       agentRunning = false;
       agentAbortController = null;
       updateStatus('ds-agent-loop-status', '空闲');
+      updateStats();
       const stopBtn2 = document.getElementById('ds-agent-stop');
       if (stopBtn2) stopBtn2.style.display = 'none';
     }
@@ -1042,6 +1217,16 @@
     lastStreamType = null;
     executedCalls.clear();
     agentStepCount = 0;
+
+    // Clear context panel
+    previewFilePath = '';
+    previewContent = '';
+    totalInputChars = 0;
+    totalOutputChars = 0;
+    const previewEl = document.getElementById('ds-agent-file-preview');
+    if (previewEl) previewEl.innerHTML = '<div class="context-empty">点击左侧文件以预览内容</div>';
+    updateStats();
+    switchContextTab('files');
 
     // Click DeepSeek's "new chat" button in the sidebar (SPA navigation, no reload)
     let clicked = false;
@@ -1276,6 +1461,231 @@
     });
   }
 
+  // ─── Context Panel (Right Side) ────────────────────────────
+
+  // Parse a line from list_directory output: "d dirname" or "f filename (size bytes)"
+  function parseListLine(line) {
+    const trimmed = line.trim();
+    if (!trimmed) return null;
+    // Format: "d name" for directory, "f name (size bytes)" for file
+    if (trimmed.startsWith('d ')) {
+      return { name: trimmed.slice(2).trim(), isDir: true };
+    }
+    if (trimmed.startsWith('f ')) {
+      // Extract name before " (size bytes)"
+      const rest = trimmed.slice(2).trim();
+      const parenIdx = rest.lastIndexOf(' (');
+      const name = parenIdx > 0 ? rest.slice(0, parenIdx) : rest;
+      return { name: name.trim(), isDir: false };
+    }
+    // "? name" for unknown entries
+    if (trimmed.startsWith('? ')) {
+      return { name: trimmed.slice(2).trim(), isDir: false };
+    }
+    return null;
+  }
+
+  async function loadFileTree(dirPath) {
+    const treeEl = document.getElementById('ds-agent-file-tree');
+    if (!treeEl) return;
+
+    treeEl.innerHTML = '<div class="context-empty">加载中...</div>';
+
+    try {
+      const result = await window.dsAgent.callTool('list_directory', { path: dirPath || workspacePath });
+      const resultText = result.data?.content?.[0]?.text || '';
+      const lines = String(resultText).split('\n').filter(l => l.trim());
+
+      if (lines.length === 0) {
+        treeEl.innerHTML = '<div class="context-empty">空目录</div>';
+        return;
+      }
+
+      // Build tree structure (list_directory outputs: "d name" or "f name (size)")
+      const root = {};
+      for (const line of lines) {
+        const parsed = parseListLine(line);
+        if (!parsed) continue;
+        root[parsed.name] = { _isDir: parsed.isDir, _children: {} };
+      }
+
+      fileTreeData = root;
+      treeEl.innerHTML = '';
+      renderTreeNodes(root, treeEl, dirPath || workspacePath);
+    } catch (err) {
+      treeEl.innerHTML = '<div class="context-empty">加载失败: ' + escapeHtml(err.message) + '</div>';
+    }
+  }
+
+  function renderTreeNodes(node, parentEl, basePath) {
+    const entries = Object.entries(node).filter(([k]) => !k.startsWith('_'));
+    entries.sort((a, b) => {
+      const aIsDir = a[1]._isDir;
+      const bIsDir = b[1]._isDir;
+      if (aIsDir && !bIsDir) return -1;
+      if (!aIsDir && bIsDir) return 1;
+      return a[0].localeCompare(b[0]);
+    });
+
+    for (const [name, info] of entries) {
+      const item = document.createElement('div');
+      item.className = 'file-tree-item' + (info._isDir ? ' directory' : '');
+      item.innerHTML = '<span class="file-icon">' + (info._isDir ? '📁' : '📄') + '</span>' + name;
+      item.title = name;
+      parentEl.appendChild(item);
+
+      const itemPath = basePath + '/' + name;
+
+      if (info._isDir) {
+        // Directory: toggle children on click
+        const childrenContainer = document.createElement('div');
+        childrenContainer.className = 'file-tree-children';
+        childrenContainer.style.display = 'none';
+        parentEl.appendChild(childrenContainer);
+
+        item.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          if (childrenContainer.style.display === 'none') {
+            // Load children if not yet loaded
+            if (childrenContainer.children.length === 0) {
+              childrenContainer.innerHTML = '<div class="context-empty" style="padding:4px">加载中...</div>';
+              try {
+                const result = await window.dsAgent.callTool('list_directory', { path: itemPath });
+                const resultText = result.data?.content?.[0]?.text || '';
+                const childLines = String(resultText).split('\n').filter(l => l.trim());
+                childrenContainer.innerHTML = '';
+                if (childLines.length === 0) {
+                  childrenContainer.innerHTML = '<div class="context-empty" style="padding:4px;font-size:11px">空目录</div>';
+                } else {
+                  const childRoot = {};
+                  for (const line of childLines) {
+                    const parsed = parseListLine(line);
+                    if (!parsed) continue;
+                    childRoot[parsed.name] = { _isDir: parsed.isDir, _children: {} };
+                  }
+                  renderTreeNodes(childRoot, childrenContainer, itemPath);
+                }
+              } catch (err) {
+                childrenContainer.innerHTML = '<div class="context-empty" style="padding:4px;font-size:11px">加载失败</div>';
+              }
+            }
+            childrenContainer.style.display = '';
+            item.querySelector('.file-icon').textContent = '📂';
+          } else {
+            childrenContainer.style.display = 'none';
+            item.querySelector('.file-icon').textContent = '📁';
+          }
+        });
+      } else {
+        // File: click to preview
+        item.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          // Highlight selected
+          parentEl.querySelectorAll('.file-tree-item.selected').forEach(el => el.classList.remove('selected'));
+          item.classList.add('selected');
+          await previewFile(itemPath);
+        });
+      }
+    }
+  }
+
+  async function previewFile(filePath) {
+    previewFilePath = filePath;
+    const previewEl = document.getElementById('ds-agent-file-preview');
+    if (!previewEl) return;
+
+    previewEl.innerHTML = '<div class="context-empty">加载中...</div>';
+    switchContextTab('preview');
+
+    try {
+      const result = await window.dsAgent.callTool('read_file', { path: filePath });
+      const content = result.data?.content?.[0]?.text || '';
+      previewContent = String(content);
+
+      const lines = previewContent.split('\n');
+      const numbered = lines.map((line, i) =>
+        '<span class="line-number">' + String(i + 1).padStart(3) + '</span>' + escapeHtml(line)
+      ).join('\n');
+
+      const fileName = filePath.split('/').pop();
+      previewEl.innerHTML = `
+        <div class="preview-header">
+          <span class="preview-filename">📄 ${escapeHtml(fileName)}</span>
+          <span>${lines.length} 行</span>
+        </div>
+        <div class="preview-content">${numbered}</div>
+      `;
+    } catch (err) {
+      previewEl.innerHTML = '<div class="context-empty">加载失败: ' + escapeHtml(err.message) + '</div>';
+    }
+  }
+
+  function updateStats() {
+    const statsEl = document.getElementById('ds-agent-stats-panel');
+    if (!statsEl) return;
+
+    const CONTEXT_LIMIT = 1000000; // 1M tokens
+    // Rough estimate: ~3 chars per token for mixed Chinese/English/code
+    const estimatedTokens = Math.ceil((totalInputChars + totalOutputChars) / 3);
+    const usagePercent = Math.min(100, Math.round((estimatedTokens / CONTEXT_LIMIT) * 100));
+    const usedK = (estimatedTokens / 1000).toFixed(1);
+    const limitK = (CONTEXT_LIMIT / 1000).toFixed(0);
+
+    let level = 'low';
+    if (usagePercent > 70) level = 'high';
+    else if (usagePercent > 40) level = 'medium';
+
+    const msgCount = messagesContainer ? messagesContainer.querySelectorAll('.ds-msg.user').length : 0;
+
+    statsEl.innerHTML = `
+      <div class="stats-card">
+        <div class="stats-label">上下文用量</div>
+        <div class="stats-value">${usedK}K / ${limitK}K</div>
+        <div class="stats-sub">约 ${estimatedTokens.toLocaleString()} tokens</div>
+        <div class="stats-progress">
+          <div class="stats-progress-fill ${level}" style="width:${usagePercent}%"></div>
+        </div>
+        <div class="stats-sub" style="margin-top:4px">已使用 ${usagePercent}%</div>
+      </div>
+      <div class="stats-card">
+        <div class="stats-row">
+          <span class="stats-row-label">用户消息</span>
+          <span class="stats-row-value">${msgCount} 条</span>
+        </div>
+        <div class="stats-row">
+          <span class="stats-row-label">输入字符</span>
+          <span class="stats-row-value">${totalInputChars.toLocaleString()}</span>
+        </div>
+        <div class="stats-row">
+          <span class="stats-row-label">输出字符</span>
+          <span class="stats-row-value">${totalOutputChars.toLocaleString()}</span>
+        </div>
+        <div class="stats-row">
+          <span class="stats-row-label">工具调用</span>
+          <span class="stats-row-value">${agentStepCount} 次</span>
+        </div>
+      </div>
+    `;
+  }
+
+  function switchContextTab(tab) {
+    contextTab = tab;
+    const tabs = contextPanel?.querySelectorAll('.ds-context-tab');
+    const panes = contextPanel?.querySelectorAll('.ds-context-pane');
+    if (tabs) {
+      tabs.forEach(t => {
+        t.classList.toggle('active', t.dataset.tab === tab);
+      });
+    }
+    if (panes) {
+      panes.forEach(p => {
+        p.classList.toggle('active', p.dataset.pane === tab);
+      });
+    }
+    // Refresh stats when switching to stats tab
+    if (tab === 'stats') updateStats();
+  }
+
   // ─── Login Detection ────────────────────────────────────────
 
   function waitForLogin() {
@@ -1375,6 +1785,20 @@
 
     // 4. Setup keyboard shortcuts
     setupKeyboardShortcuts();
+
+    // 5. Load workspace and file tree
+    try {
+      workspacePath = await window.dsAgent.getWorkspace();
+      if (workspacePath) {
+        console.log(`${PREFIX} Workspace: ${workspacePath}`);
+        loadFileTree(workspacePath);
+      }
+    } catch (err) {
+      console.log(`${PREFIX} Could not get workspace:`, err.message);
+    }
+
+    // Show initial stats
+    updateStats();
 
     console.log(`${PREFIX} Ready — ${toolRegistry.length} tools available, mode: ${panelMode}`);
 
