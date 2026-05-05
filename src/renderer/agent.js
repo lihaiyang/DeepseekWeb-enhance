@@ -45,6 +45,8 @@
   let thinkingExpanded = true;      // Whether thinking bubble is expanded
   let lastStreamType = null;        // 'thinking' | 'response' | null — tracks current stream phase for interleaved think/response
   let isComposing = false;          // IME composition state (Chinese/Japanese input)
+  let userScrolledUp = false;       // Whether user has manually scrolled up (pause auto-scroll)
+  let scrollToBottomBtn = null;     // "Scroll to bottom" button
 
   // ─── UI Elements (populated in createPanel) ──────────────────
   let panel = null;
@@ -164,6 +166,35 @@
     body.appendChild(messagesContainer);
     body.appendChild(statusContainer);
     body.appendChild(stepsContainer);
+
+    // Scroll-to-bottom button (appears when user scrolls up during streaming)
+    scrollToBottomBtn = document.createElement('button');
+    scrollToBottomBtn.id = 'ds-agent-scroll-bottom';
+    scrollToBottomBtn.title = '滚动到底部';
+    scrollToBottomBtn.innerHTML = '↓';
+    scrollToBottomBtn.addEventListener('click', () => {
+      userScrolledUp = false;
+      scrollToBottomBtn.style.display = 'none';
+      scrollMessagesToBottom();
+    });
+    scrollToBottomBtn.style.display = 'none'; // hidden by default
+    messagesContainer.appendChild(scrollToBottomBtn);
+
+    // Scroll listener: detect when user manually scrolls up
+    let lastScrollTop = 0;
+    messagesContainer.addEventListener('scroll', () => {
+      const currentScrollTop = messagesContainer.scrollTop;
+      const atBottom = messagesContainer.scrollHeight - currentScrollTop - messagesContainer.clientHeight < 40;
+      // User scrolled up (scrollTop decreased) → immediately stop auto-scroll
+      if (currentScrollTop < lastScrollTop - 2) {
+        userScrolledUp = true;
+        if (scrollToBottomBtn) scrollToBottomBtn.style.display = 'flex';
+      } else if (atBottom) {
+        userScrolledUp = false;
+        if (scrollToBottomBtn) scrollToBottomBtn.style.display = 'none';
+      }
+      lastScrollTop = currentScrollTop;
+    });
 
     // Right context panel (visible in full mode)
     contextPanel = document.createElement('div');
@@ -295,7 +326,7 @@
       /* ===== Body ===== */
       #ds-agent-body {
         flex: 1; overflow-y: auto; display: flex; flex-direction: column;
-        padding: 0;
+        padding: 0; position: relative;
       }
       #ds-agent-panel.mode-compact #ds-agent-body {
         padding: 10px 12px; max-height: 440px;
@@ -305,6 +336,7 @@
       #ds-agent-messages {
         flex: 1; overflow-y: auto; padding: 12px 14px;
         display: flex; flex-direction: column; gap: 8px;
+        position: relative;
       }
       #ds-agent-panel.mode-compact #ds-agent-messages { display: none; }
 
@@ -464,6 +496,17 @@
       }
       #ds-agent-send:hover { background: #74c7ec; }
       #ds-agent-send:disabled { opacity: 0.4; cursor: not-allowed; }
+
+      /* ===== Scroll-to-bottom button ===== */
+      #ds-agent-scroll-bottom {
+        position: absolute; bottom: 12px; right: 16px;
+        width: 32px; height: 32px; border-radius: 50%;
+        background: #45475a; color: #cdd6f4; border: 1px solid #585b70;
+        cursor: pointer; font-size: 16px; line-height: 1;
+        display: flex; align-items: center; justify-content: center;
+        z-index: 10; transition: background 0.15s; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      }
+      #ds-agent-scroll-bottom:hover { background: #585b70; }
 
       /* ===== Full mode: split layout ===== */
       #ds-agent-panel.mode-full #ds-agent-body {
@@ -845,7 +888,7 @@
   }
 
   function scrollMessagesToBottom() {
-    if (!messagesContainer) return;
+    if (!messagesContainer || userScrolledUp) return;
     requestAnimationFrame(() => {
       messagesContainer.scrollTop = messagesContainer.scrollHeight;
     });
@@ -1227,6 +1270,8 @@
     previewContent = '';
     totalInputChars = 0;
     totalOutputChars = 0;
+    userScrolledUp = false;
+    if (scrollToBottomBtn) scrollToBottomBtn.style.display = 'none';
     const previewEl = document.getElementById('ds-agent-file-preview');
     if (previewEl) previewEl.innerHTML = '<div class="context-empty">点击左侧文件以预览内容</div>';
     updateStats();
