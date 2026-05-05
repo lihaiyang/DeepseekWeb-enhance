@@ -44,6 +44,7 @@
   let currentThinkingContent = '';  // Accumulated thinking text
   let thinkingExpanded = true;      // Whether thinking bubble is expanded
   let lastStreamType = null;        // 'thinking' | 'response' | null — tracks current stream phase for interleaved think/response
+  let isComposing = false;          // IME composition state (Chinese/Japanese input)
 
   // ─── UI Elements (populated in createPanel) ──────────────────
   let panel = null;
@@ -619,8 +620,11 @@
     inputTextarea = document.getElementById('ds-agent-input');
     sendButton = document.getElementById('ds-agent-send');
 
+    inputTextarea.addEventListener('compositionstart', () => { isComposing = true; });
+    inputTextarea.addEventListener('compositionend', () => { isComposing = false; });
+
     inputTextarea.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.key === 'Enter' && !e.shiftKey && !isComposing) {
         e.preventDefault();
         sendUserMessage();
       }
