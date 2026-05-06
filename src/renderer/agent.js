@@ -499,7 +499,8 @@
 
       /* ===== Scroll-to-bottom button ===== */
       #ds-agent-scroll-bottom {
-        position: absolute; bottom: 12px; right: 16px;
+        position: sticky; bottom: 12px; align-self: flex-end;
+        margin-top: -40px; /* pull up so it doesn't add extra scroll space */
         width: 32px; height: 32px; border-radius: 50%;
         background: #45475a; color: #cdd6f4; border: 1px solid #585b70;
         cursor: pointer; font-size: 16px; line-height: 1;
