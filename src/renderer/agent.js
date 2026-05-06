@@ -163,7 +163,17 @@
     stepsContainer = document.createElement('div');
     stepsContainer.id = 'ds-agent-steps';
 
-    body.appendChild(messagesContainer);
+    // Chat column (left side): messages + input
+    const chatColumn = document.createElement('div');
+    chatColumn.id = 'ds-agent-chat-column';
+    chatColumn.appendChild(messagesContainer);
+
+    // Resize handle (draggable divider between chat and context)
+    const resizeHandle = document.createElement('div');
+    resizeHandle.id = 'ds-agent-resize-handle';
+
+    body.appendChild(chatColumn);
+    body.appendChild(resizeHandle);
     body.appendChild(statusContainer);
     body.appendChild(stepsContainer);
 
@@ -223,6 +233,36 @@
     `;
     body.appendChild(contextPanel);
 
+    // ── Resize handle drag logic ──
+    let splitRatio = 0.6; // default 6:4
+    let isDragging = false;
+
+    resizeHandle.addEventListener('mousedown', function(e) {
+      if (panelMode === 'compact') return;
+      e.preventDefault();
+      isDragging = true;
+      resizeHandle.classList.add('active');
+      document.body.style.userSelect = 'none';
+      document.body.style.cursor = 'col-resize';
+    });
+
+    document.addEventListener('mousemove', function(e) {
+      if (!isDragging) return;
+      var bodyRect = body.getBoundingClientRect();
+      var x = e.clientX - bodyRect.left;
+      splitRatio = Math.max(0.3, Math.min(0.8, x / bodyRect.width));
+      chatColumn.style.flex = '0 0 ' + (splitRatio * 100) + '%';
+      chatColumn.style.maxWidth = (splitRatio * 100) + '%';
+    });
+
+    document.addEventListener('mouseup', function() {
+      if (!isDragging) return;
+      isDragging = false;
+      resizeHandle.classList.remove('active');
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    });
+
     // Wire up context tab clicks
     setTimeout(() => {
       const tabs = contextPanel.querySelectorAll('.ds-context-tab');
@@ -246,9 +286,11 @@
       <button id="ds-agent-send" title="发送">➤</button>
     `;
 
+    // Input area goes inside chat column, not directly in panel
+    chatColumn.appendChild(inputArea);
+
     panel.appendChild(header);
     panel.appendChild(body);
-    panel.appendChild(inputArea);
 
     // FAB button (shown when panel is closed)
     fabButton = document.createElement('button');
@@ -325,123 +367,180 @@
 
       /* ===== Body ===== */
       #ds-agent-body {
-        flex: 1; overflow-y: auto; display: flex; flex-direction: column;
+        flex: 1; overflow: hidden; display: flex; flex-direction: column;
         padding: 0; position: relative;
       }
       #ds-agent-panel.mode-compact #ds-agent-body {
         padding: 10px 12px; max-height: 440px;
+        overflow-y: auto;
+      }
+      #ds-agent-panel.mode-half #ds-agent-body,
+      #ds-agent-panel.mode-full #ds-agent-body {
+        flex-direction: row;
+      }
+
+      /* ===== Chat Column (left side) ===== */
+      #ds-agent-chat-column {
+        display: flex; flex-direction: column;
+        flex: 0 0 60%; max-width: 80%; min-width: 30%;
+        overflow: hidden;
+      }
+      #ds-agent-panel.mode-compact #ds-agent-chat-column {
+        flex: 1; max-width: 100%; min-width: 0;
+      }
+
+      /* ===== Resize Handle ===== */
+      #ds-agent-resize-handle {
+        display: none;
+        width: 4px; flex-shrink: 0;
+        background: #313244;
+        cursor: col-resize;
+        transition: background 0.15s;
+        position: relative;
+      }
+      #ds-agent-resize-handle:hover,
+      #ds-agent-resize-handle.active {
+        background: #89b4fa;
+      }
+      #ds-agent-resize-handle::after {
+        content: '';
+        position: absolute; inset: 0 -4px;
+      }
+      #ds-agent-panel.mode-half #ds-agent-resize-handle,
+      #ds-agent-panel.mode-full #ds-agent-resize-handle {
+        display: block;
       }
 
       /* ===== Messages ===== */
       #ds-agent-messages {
-        flex: 1; overflow-y: auto; padding: 12px 14px;
-        display: flex; flex-direction: column; gap: 8px;
+        flex: 1; overflow-y: auto; padding: 8px 0 0 0;
+        display: flex; flex-direction: column;
         position: relative;
+        min-height: 0;
       }
       #ds-agent-panel.mode-compact #ds-agent-messages { display: none; }
 
       /* ===== Messages: shared ===== */
       .ds-msg {
-        padding: 10px 14px; border-radius: 12px;
-        font-size: 13px; line-height: 1.6; word-break: break-word;
+        padding: 14px 20px;
+        font-size: 13px; line-height: 1.7; word-break: break-word;
         animation: dsMsgIn 0.2s ease;
+        border-left: 3px solid transparent;
+        border-bottom: 1px solid rgba(49, 50, 68, 0.4);
       }
-      @keyframes dsMsgIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+      @keyframes dsMsgIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
       .ds-msg .msg-label {
-        font-weight: 600; font-size: 11px; margin-bottom: 4px;
-        text-transform: uppercase; letter-spacing: 0.5px;
+        font-weight: 600; font-size: 11px; margin-bottom: 6px;
+        letter-spacing: 0.3px;
+        display: flex; align-items: center; gap: 6px;
       }
-      .ds-msg .msg-content { font-size: 13px; }
+      .ds-msg .msg-content { font-size: 13px; color: #cdd6f4; }
 
-      /* User message: right-aligned blue bubble */
+      /* User message: blue left accent, flat log style */
       .ds-msg.user {
-        align-self: flex-end; max-width: 80%;
-        background: #89b4fa; color: #1e1e2e;
-        border-bottom-right-radius: 4px;
+        align-self: stretch; max-width: 100%;
+        background: transparent;
+        border-left-color: #89b4fa;
       }
-      .ds-msg.user .msg-label { color: #1e1e2e; opacity: 0.7; }
+      .ds-msg.user .msg-label { color: #89b4fa; }
 
-      /* AI response: left-aligned dark bubble, like a chat message from the model */
+      /* AI response: purple left accent, flat log style */
       .ds-msg.ai {
-        align-self: flex-start; max-width: 88%;
-        background: #2a2a3c; color: #cdd6f4;
-        border-bottom-left-radius: 4px; white-space: pre-wrap;
+        align-self: stretch; max-width: 100%;
+        background: transparent;
+        border-left-color: #cba6f7;
+        white-space: pre-wrap;
       }
-      .ds-msg.ai .msg-label { color: #89b4fa; }
+      .ds-msg.ai .msg-label { color: #cba6f7; }
       .ds-msg.ai.streaming {
-        border-left: 3px solid #89b4fa;
+        background: rgba(203, 166, 247, 0.04);
       }
 
-      /* Thinking bubble: collapsible, amber/gold accent, italic text */
+      /* Thinking: collapsible, amber/gold accent */
       .ds-msg.thinking {
-        align-self: flex-start; max-width: 90%;
-        background: #252530; border-left: 3px solid #f9e2af;
+        align-self: stretch; max-width: 100%;
+        background: transparent;
+        border-left: 3px solid #f9e2af;
         font-size: 12px; padding: 0;
         transition: all 0.2s ease;
+        border-bottom: none;
       }
       .ds-msg.thinking .thinking-header {
         display: flex; align-items: center; gap: 6px;
-        padding: 8px 12px; cursor: pointer; user-select: none;
+        padding: 10px 20px; cursor: pointer; user-select: none;
         color: #f9e2af; font-weight: 600; font-size: 12px;
         transition: background 0.15s;
       }
-      .ds-msg.thinking .thinking-header:hover { background: #2a2a38; }
+      .ds-msg.thinking .thinking-header:hover { background: rgba(249, 226, 175, 0.06); }
       .ds-msg.thinking .thinking-arrow {
         font-size: 10px; transition: transform 0.2s ease;
         display: inline-block;
       }
       .ds-msg.thinking.collapsed .thinking-arrow { transform: rotate(-90deg); }
       .ds-msg.thinking .thinking-body {
-        padding: 0 12px 8px 12px; color: #a6adc8;
-        font-style: italic; font-size: 12px; line-height: 1.55;
+        padding: 0 20px 12px 20px; color: #a6adc8;
+        font-size: 12px; line-height: 1.6;
         white-space: pre-wrap; max-height: 300px; overflow-y: auto;
       }
       .ds-msg.thinking.collapsed .thinking-body { display: none; }
 
       /* Tool call: blue left border, monospace args */
       .ds-msg.tool-call {
-        align-self: flex-start; max-width: 92%;
-        background: #1e2030; border-left: 3px solid #89b4fa;
-        font-size: 12px; padding: 8px 12px;
+        align-self: stretch; max-width: 100%;
+        background: transparent;
+        border-left: 3px solid #89b4fa;
+        font-size: 12px; padding: 10px 20px;
       }
       .ds-msg.tool-call .msg-label { color: #89b4fa; }
       .ds-msg.tool-call .msg-content {
         font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-        font-size: 11px; color: #bac2de; white-space: pre-wrap;
-        max-height: 150px; overflow-y: auto;
+        font-size: 12px; color: #bac2de; white-space: pre-wrap;
+        max-height: 200px; overflow-y: auto;
+        background: rgba(137, 180, 250, 0.05);
+        padding: 10px 14px; border-radius: 6px;
+        margin-top: 4px;
       }
 
       /* Tool result success: green left border */
       .ds-msg.tool-result {
-        align-self: flex-start; max-width: 92%;
-        background: #1e2030; border-left: 3px solid #a6e3a1;
-        font-size: 12px; padding: 8px 12px;
+        align-self: stretch; max-width: 100%;
+        background: transparent;
+        border-left: 3px solid #a6e3a1;
+        font-size: 12px; padding: 10px 20px;
       }
       .ds-msg.tool-result .msg-label { color: #a6e3a1; }
       .ds-msg.tool-result .msg-content {
         font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-        font-size: 11px; color: #bac2de; white-space: pre-wrap;
-        max-height: 150px; overflow-y: auto;
+        font-size: 12px; color: #bac2de; white-space: pre-wrap;
+        max-height: 200px; overflow-y: auto;
+        background: rgba(166, 227, 161, 0.05);
+        padding: 10px 14px; border-radius: 6px;
+        margin-top: 4px;
       }
 
       /* Tool error: red left border */
       .ds-msg.tool-error {
-        align-self: flex-start; max-width: 92%;
-        background: #1e2030; border-left: 3px solid #f38ba8;
-        font-size: 12px; padding: 8px 12px;
+        align-self: stretch; max-width: 100%;
+        background: transparent;
+        border-left: 3px solid #f38ba8;
+        font-size: 12px; padding: 10px 20px;
       }
       .ds-msg.tool-error .msg-label { color: #f38ba8; }
       .ds-msg.tool-error .msg-content {
         font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-        font-size: 11px; color: #bac2de; white-space: pre-wrap;
-        max-height: 150px; overflow-y: auto;
+        font-size: 12px; color: #bac2de; white-space: pre-wrap;
+        max-height: 200px; overflow-y: auto;
+        background: rgba(243, 139, 168, 0.05);
+        padding: 10px 14px; border-radius: 6px;
+        margin-top: 4px;
       }
 
       /* System message: centered, muted */
       .ds-msg.system {
         align-self: center; max-width: 70%; text-align: center;
         background: transparent; color: #6c7086;
-        font-size: 11px; padding: 4px 12px;
+        font-size: 11px; padding: 8px 20px;
+        border-left: none; border-bottom: none;
       }
 
       /* ===== Status (compact mode) ===== */
@@ -470,13 +569,12 @@
 
       /* ===== Input Area ===== */
       #ds-agent-input-area {
-        display: none; align-items: flex-end; gap: 8px;
+        display: flex; align-items: flex-end; gap: 8px;
         padding: 10px 14px; background: #181825; border-top: 1px solid #313244;
         flex-shrink: 0;
       }
-      #ds-agent-panel.mode-half #ds-agent-input-area,
-      #ds-agent-panel.mode-full #ds-agent-input-area {
-        display: flex;
+      #ds-agent-panel.mode-compact #ds-agent-input-area {
+        display: none;
       }
       #ds-agent-input {
         flex: 1; resize: none; min-height: 36px; max-height: 120px;
@@ -497,6 +595,45 @@
       #ds-agent-send:hover { background: #74c7ec; }
       #ds-agent-send:disabled { opacity: 0.4; cursor: not-allowed; }
 
+      /* ===== Custom Scrollbar (messages & context panes) ===== */
+      #ds-agent-messages::-webkit-scrollbar,
+      .ds-context-pane::-webkit-scrollbar,
+      .preview-content::-webkit-scrollbar,
+      .ds-msg.tool-call .msg-content::-webkit-scrollbar,
+      .ds-msg.tool-result .msg-content::-webkit-scrollbar,
+      .ds-msg.tool-error .msg-content::-webkit-scrollbar,
+      .ds-msg.thinking .thinking-body::-webkit-scrollbar {
+        width: 6px;
+      }
+      #ds-agent-messages::-webkit-scrollbar-track,
+      .ds-context-pane::-webkit-scrollbar-track,
+      .preview-content::-webkit-scrollbar-track,
+      .ds-msg.tool-call .msg-content::-webkit-scrollbar-track,
+      .ds-msg.tool-result .msg-content::-webkit-scrollbar-track,
+      .ds-msg.tool-error .msg-content::-webkit-scrollbar-track,
+      .ds-msg.thinking .thinking-body::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      #ds-agent-messages::-webkit-scrollbar-thumb,
+      .ds-context-pane::-webkit-scrollbar-thumb,
+      .preview-content::-webkit-scrollbar-thumb,
+      .ds-msg.tool-call .msg-content::-webkit-scrollbar-thumb,
+      .ds-msg.tool-result .msg-content::-webkit-scrollbar-thumb,
+      .ds-msg.tool-error .msg-content::-webkit-scrollbar-thumb,
+      .ds-msg.thinking .thinking-body::-webkit-scrollbar-thumb {
+        background: #45475a;
+        border-radius: 3px;
+      }
+      #ds-agent-messages::-webkit-scrollbar-thumb:hover,
+      .ds-context-pane::-webkit-scrollbar-thumb:hover,
+      .preview-content::-webkit-scrollbar-thumb:hover,
+      .ds-msg.tool-call .msg-content::-webkit-scrollbar-thumb:hover,
+      .ds-msg.tool-result .msg-content::-webkit-scrollbar-thumb:hover,
+      .ds-msg.tool-error .msg-content::-webkit-scrollbar-thumb:hover,
+      .ds-msg.thinking .thinking-body::-webkit-scrollbar-thumb:hover {
+        background: #585b70;
+      }
+
       /* ===== Scroll-to-bottom button ===== */
       #ds-agent-scroll-bottom {
         position: sticky; bottom: 12px; align-self: flex-end;
@@ -510,19 +647,16 @@
       #ds-agent-scroll-bottom:hover { background: #585b70; }
 
       /* ===== Full mode: split layout ===== */
-      #ds-agent-panel.mode-full #ds-agent-body {
-        flex-direction: row;
-      }
-      #ds-agent-panel.mode-full #ds-agent-messages {
-        flex: 0 0 55%; max-width: 55%;
-        border-right: 1px solid #313244;
+      #ds-agent-panel.mode-full #ds-agent-chat-column {
+        flex: 0 0 60%; max-width: 80%; min-width: 30%;
       }
 
-      /* ===== Context Panel (right side, full mode only) ===== */
+      /* ===== Context Panel (right side, half & full mode) ===== */
       #ds-agent-context-panel {
         display: none; flex: 1; flex-direction: column;
         background: #181825; overflow: hidden; min-width: 0;
       }
+      #ds-agent-panel.mode-half #ds-agent-context-panel,
       #ds-agent-panel.mode-full #ds-agent-context-panel {
         display: flex;
       }
@@ -848,12 +982,10 @@
     const body = el.querySelector('.thinking-body');
     body.textContent = delta;
 
-    // Toggle collapse on header click
+    // Toggle collapse on header click (arrow rotation handled by CSS)
     const header = el.querySelector('.thinking-header');
     header.addEventListener('click', () => {
       el.classList.toggle('collapsed');
-      const arrow = header.querySelector('.thinking-arrow');
-      if (arrow) arrow.textContent = el.classList.contains('collapsed') ? '▶' : '▼';
     });
 
     messagesContainer.appendChild(el);
