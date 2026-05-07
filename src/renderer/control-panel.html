@@ -5,22 +5,54 @@
   <title>DS Agent — Control Panel</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    /* ===== Theme: Dark (Catppuccin Mocha) ===== */
+    body[data-theme="dark"] {
+      --ds-bg-base: #1e1e2e;
+      --ds-bg-mantle: #181825;
+      --ds-bg-surface0: #313244;
+      --ds-bg-surface1: #45475a;
+      --ds-text-primary: #cdd6f4;
+      --ds-text-secondary: #a6adc8;
+      --ds-accent-blue: #89b4fa;
+      --ds-accent-sky: #74c7ec;
+      --ds-accent-green: #a6e3a1;
+      --ds-accent-red: #f38ba8;
+      --ds-accent-maroon: #eba0ac;
+      --ds-text-on-accent: #1e1e2e;
+    }
+    /* ===== Theme: Light (Catppuccin Latte) ===== */
+    body[data-theme="light"] {
+      --ds-bg-base: #eff1f5;
+      --ds-bg-mantle: #e6e9ef;
+      --ds-bg-surface0: #ccd0da;
+      --ds-bg-surface1: #bcc0cc;
+      --ds-text-primary: #4c4f69;
+      --ds-text-secondary: #5c5f77;
+      --ds-accent-blue: #1e66f5;
+      --ds-accent-sky: #04a5e5;
+      --ds-accent-green: #40a02b;
+      --ds-accent-red: #d20f39;
+      --ds-accent-maroon: #e64553;
+      --ds-text-on-accent: #ffffff;
+    }
+
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #1e1e2e; color: #cdd6f4; font-size: 13px;
+      background: var(--ds-bg-base); color: var(--ds-text-primary); font-size: 13px;
     }
 
     /* Tabs */
     .tabs {
-      display: flex; border-bottom: 1px solid #313244;
-      background: #181825;
+      display: flex; border-bottom: 1px solid var(--ds-bg-surface0);
+      background: var(--ds-bg-mantle);
     }
     .tab {
-      padding: 10px 16px; cursor: pointer; color: #a6adc8;
+      padding: 10px 16px; cursor: pointer; color: var(--ds-text-secondary);
       border-bottom: 2px solid transparent; transition: all 0.2s;
     }
-    .tab:hover { color: #cdd6f4; }
-    .tab.active { color: #89b4fa; border-bottom-color: #89b4fa; }
+    .tab:hover { color: var(--ds-text-primary); }
+    .tab.active { color: var(--ds-accent-blue); border-bottom-color: var(--ds-accent-blue); }
 
     .tab-content { display: none; padding: 16px; }
     .tab-content.active { display: block; }
@@ -30,51 +62,51 @@
       display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
     }
     .status-card {
-      background: #313244; border-radius: 8px; padding: 12px;
+      background: var(--ds-bg-surface0); border-radius: 8px; padding: 12px;
     }
-    .status-card .label { color: #a6adc8; font-size: 11px; margin-bottom: 4px; }
+    .status-card .label { color: var(--ds-text-secondary); font-size: 11px; margin-bottom: 4px; }
     .status-card .value { font-size: 18px; font-weight: 600; }
-    .status-card .value.ok { color: #a6e3a1; }
-    .status-card .value.err { color: #f38ba8; }
+    .status-card .value.ok { color: var(--ds-accent-green); }
+    .status-card .value.err { color: var(--ds-accent-red); }
 
     /* Tool list */
     .tool-list { list-style: none; }
     .tool-item {
-      background: #313244; border-radius: 6px; padding: 10px 12px;
+      background: var(--ds-bg-surface0); border-radius: 6px; padding: 10px 12px;
       margin-bottom: 6px; cursor: pointer; transition: background 0.2s;
     }
-    .tool-item:hover { background: #45475a; }
-    .tool-item .tool-name { font-weight: 600; color: #89b4fa; }
-    .tool-item .tool-desc { color: #a6adc8; font-size: 12px; margin-top: 2px; }
+    .tool-item:hover { background: var(--ds-bg-surface1); }
+    .tool-item .tool-name { font-weight: 600; color: var(--ds-accent-blue); }
+    .tool-item .tool-desc { color: var(--ds-text-secondary); font-size: 12px; margin-top: 2px; }
 
     /* Settings */
     .setting-group { margin-bottom: 16px; }
     .setting-group label {
-      display: block; color: #a6adc8; font-size: 12px; margin-bottom: 4px;
+      display: block; color: var(--ds-text-secondary); font-size: 12px; margin-bottom: 4px;
     }
     .setting-group input, .setting-group select {
-      width: 100%; padding: 8px 10px; background: #313244; color: #cdd6f4;
-      border: 1px solid #45475a; border-radius: 6px; font-size: 13px;
+      width: 100%; padding: 8px 10px; background: var(--ds-bg-surface0); color: var(--ds-text-primary);
+      border: 1px solid var(--ds-bg-surface1); border-radius: 6px; font-size: 13px;
     }
     .setting-group input:focus, .setting-group select:focus {
-      outline: none; border-color: #89b4fa;
+      outline: none; border-color: var(--ds-accent-blue);
     }
 
     .btn {
       padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer;
       font-size: 13px; font-weight: 500; transition: all 0.2s;
     }
-    .btn-primary { background: #89b4fa; color: #1e1e2e; }
-    .btn-primary:hover { background: #74c7ec; }
-    .btn-danger { background: #f38ba8; color: #1e1e2e; }
-    .btn-danger:hover { background: #eba0ac; }
+    .btn-primary { background: var(--ds-accent-blue); color: var(--ds-text-on-accent); }
+    .btn-primary:hover { background: var(--ds-accent-sky); }
+    .btn-danger { background: var(--ds-accent-red); color: var(--ds-text-on-accent); }
+    .btn-danger:hover { background: var(--ds-accent-maroon); }
 
     /* Refresh button */
     .refresh-btn {
-      float: right; background: none; border: none; color: #89b4fa;
+      float: right; background: none; border: none; color: var(--ds-accent-blue);
       cursor: pointer; font-size: 16px; padding: 4px;
     }
-    .refresh-btn:hover { color: #74c7ec; }
+    .refresh-btn:hover { color: var(--ds-accent-sky); }
 
     /* Toggle switch */
     .toggle {
@@ -82,19 +114,19 @@
     }
     .toggle input { opacity: 0; width: 0; height: 0; }
     .toggle .slider {
-      position: absolute; inset: 0; background: #45475a; border-radius: 11px;
+      position: absolute; inset: 0; background: var(--ds-bg-surface1); border-radius: 11px;
       transition: 0.3s; cursor: pointer;
     }
     .toggle .slider:before {
       content: ''; position: absolute; width: 18px; height: 18px;
-      left: 2px; bottom: 2px; background: #cdd6f4; border-radius: 50%;
+      left: 2px; bottom: 2px; background: var(--ds-text-primary); border-radius: 50%;
       transition: 0.3s;
     }
-    .toggle input:checked + .slider { background: #89b4fa; }
+    .toggle input:checked + .slider { background: var(--ds-accent-blue); }
     .toggle input:checked + .slider:before { transform: translateX(18px); }
   </style>
 </head>
-<body>
+<body data-theme="dark">
   <div class="tabs">
     <div class="tab active" data-tab="status">状态</div>
     <div class="tab" data-tab="tools">工具</div>
@@ -123,7 +155,7 @@
     </div>
     <div class="status-card" style="margin-top: 10px;">
       <div class="label">工作目录</div>
-      <div class="value" id="cp-workspace-status" style="font-size: 13px; word-break: break-all; color: #89b4fa;">-</div>
+      <div class="value" id="cp-workspace-status" style="font-size: 13px; word-break: break-all; color: var(--ds-accent-blue);">-</div>
     </div>
     <div style="margin-top: 16px; text-align: center;">
       <button class="btn btn-primary" id="cp-refresh">🔄 刷新状态</button>
@@ -137,7 +169,7 @@
       <button class="refresh-btn" id="cp-refresh-tools" title="刷新">🔄</button>
     </div>
     <ul class="tool-list" id="cp-tool-list">
-      <li style="color: #a6adc8;">加载中...</li>
+      <li style="color: var(--ds-text-secondary);">加载中...</li>
     </ul>
   </div>
 
@@ -149,7 +181,7 @@
         <input type="text" id="cp-workspace" readonly style="flex: 1; cursor: default;" />
         <button class="btn btn-primary" id="cp-select-folder" style="white-space: nowrap;">📁 选择</button>
       </div>
-      <div style="color: #a6adc8; font-size: 11px; margin-top: 4px;">Agent 执行命令和文件操作的根目录</div>
+      <div style="color: var(--ds-text-secondary); font-size: 11px; margin-top: 4px;">Agent 执行命令和文件操作的根目录</div>
     </div>
     <div class="setting-group">
       <label>聊天站点</label>
@@ -168,6 +200,13 @@
         <span class="slider"></span>
       </label>
     </div>
+    <div class="setting-group" style="display: flex; justify-content: space-between; align-items: center;">
+      <label style="margin-bottom: 0;">亮色主题</label>
+      <label class="toggle">
+        <input type="checkbox" id="cp-theme-toggle">
+        <span class="slider"></span>
+      </label>
+    </div>
     <div style="margin-top: 20px; text-align: center;">
       <button class="btn btn-primary" id="cp-save-settings">💾 保存设置</button>
     </div>
@@ -177,6 +216,22 @@
     // Wait for dsAgent API to be available (contextBridge may not be ready immediately)
     function getDsAgent() {
       return window.dsAgent || null;
+    }
+
+    // Theme management
+    function applyTheme(theme) {
+      document.body.setAttribute('data-theme', theme);
+      document.getElementById('cp-theme-toggle').checked = (theme === 'light');
+    }
+
+    function toggleTheme() {
+      const isLight = document.getElementById('cp-theme-toggle').checked;
+      const theme = isLight ? 'light' : 'dark';
+      applyTheme(theme);
+      const dsAgent = getDsAgent();
+      if (dsAgent) {
+        dsAgent.setConfig('theme', theme).catch(function() {});
+      }
     }
 
     // Tab switching
@@ -228,7 +283,7 @@
     async function refreshTools() {
       const dsAgent = getDsAgent();
       if (!dsAgent) {
-        document.getElementById('cp-tool-list').innerHTML = '<li style="color: #f38ba8;">API 不可用</li>';
+        document.getElementById('cp-tool-list').innerHTML = '<li style="color: var(--ds-accent-red);">API 不可用</li>';
         return;
       }
 
@@ -243,13 +298,13 @@
             '</li>'
           ).join('');
         } else if (result.success && result.data && result.data.length === 0) {
-          list.innerHTML = '<li style="color: #a6adc8;">无可用工具</li>';
+          list.innerHTML = '<li style="color: var(--ds-text-secondary);">无可用工具</li>';
         } else {
-          list.innerHTML = '<li style="color: #f38ba8;">加载失败: ' + escapeHtml(result.error || '未知错误') + '</li>';
+          list.innerHTML = '<li style="color: var(--ds-accent-red);">加载失败: ' + escapeHtml(result.error || '未知错误') + '</li>';
         }
       } catch (err) {
         console.error('[Control Panel] refreshTools error:', err);
-        document.getElementById('cp-tool-list').innerHTML = '<li style="color: #f38ba8;">加载失败: ' + escapeHtml(err.message || '') + '</li>';
+        document.getElementById('cp-tool-list').innerHTML = '<li style="color: var(--ds-accent-red);">加载失败: ' + escapeHtml(err.message || '') + '</li>';
       }
     }
 
@@ -282,10 +337,12 @@
       const siteSelect = document.getElementById('cp-site-select').value;
       const maxSteps = document.getElementById('cp-max-steps').value;
       const confirmTools = document.getElementById('cp-confirm-tools').checked;
+      const theme = document.getElementById('cp-theme-toggle').checked ? 'light' : 'dark';
 
       try {
         await dsAgent.setConfig('max_steps', parseInt(maxSteps));
         await dsAgent.setConfig('confirm_tools', confirmTools);
+        await dsAgent.setConfig('theme', theme);
 
         // Navigate to selected site
         await dsAgent.goto(siteSelect);
@@ -307,6 +364,7 @@
     // Event listeners
     document.getElementById('cp-refresh').addEventListener('click', refreshStatus);
     document.getElementById('cp-refresh-tools').addEventListener('click', refreshTools);
+    document.getElementById('cp-theme-toggle').addEventListener('change', toggleTheme);
 
     // Initial load — wait for dsAgent to be ready
     async function initPanel() {
@@ -327,6 +385,14 @@
           const savedConfirm = await dsAgent.getConfig('confirm_tools');
           if (savedConfirm != null) {
             document.getElementById('cp-confirm-tools').checked = savedConfirm;
+          }
+
+          // Load theme
+          const savedTheme = await dsAgent.getConfig('theme');
+          if (savedTheme === 'light' || savedTheme === 'dark') {
+            applyTheme(savedTheme);
+          } else {
+            applyTheme('dark');
           }
         } catch (err) {
           console.error('[Control Panel] load settings error:', err);
@@ -355,13 +421,17 @@
             agent.getConfig('confirm_tools').then(v => {
               if (v != null) document.getElementById('cp-confirm-tools').checked = v;
             }).catch(() => {});
+            agent.getConfig('theme').then(v => {
+              if (v === 'light' || v === 'dark') applyTheme(v);
+              else applyTheme('dark');
+            }).catch(() => {});
             refreshStatus();
             refreshTools();
           } else if (retries > 20) {
             clearInterval(retryInterval);
             document.getElementById('cp-conn').textContent = '❌ API 不可用';
             document.getElementById('cp-conn').className = 'value err';
-            document.getElementById('cp-tool-list').innerHTML = '<li style="color: #f38ba8;">无法连接到主进程</li>';
+            document.getElementById('cp-tool-list').innerHTML = '<li style="color: var(--ds-accent-red);">无法连接到主进程</li>';
           }
         }, 200);
       }
