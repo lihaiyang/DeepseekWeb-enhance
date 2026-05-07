@@ -516,12 +516,65 @@
         align-self: stretch; max-width: 100%;
         background: transparent;
         border-left-color: var(--ds-accent-mauve);
-        white-space: pre-wrap;
       }
       .ds-msg.ai .msg-label { color: var(--ds-accent-mauve); }
       .ds-msg.ai.streaming {
         background: rgba(203, 166, 247, 0.04);
       }
+
+      /* ===== AI Markdown Content Styles ===== */
+      .ds-msg.ai .msg-content p { margin: 0 0 8px 0; line-height: 1.7; }
+      .ds-msg.ai .msg-content p:last-child { margin-bottom: 0; }
+      .ds-msg.ai .msg-content h1,
+      .ds-msg.ai .msg-content h2,
+      .ds-msg.ai .msg-content h3,
+      .ds-msg.ai .msg-content h4,
+      .ds-msg.ai .msg-content h5,
+      .ds-msg.ai .msg-content h6 {
+        margin: 14px 0 6px 0; font-weight: 600; line-height: 1.3;
+      }
+      .ds-msg.ai .msg-content h1 { font-size: 18px; }
+      .ds-msg.ai .msg-content h2 { font-size: 16px; }
+      .ds-msg.ai .msg-content h3 { font-size: 14px; }
+      .ds-msg.ai .msg-content h4 { font-size: 13px; }
+      .ds-msg.ai .msg-content h5 { font-size: 12px; }
+      .ds-msg.ai .msg-content h6 { font-size: 11px; color: var(--ds-text-secondary); }
+      .ds-msg.ai .msg-content ul,
+      .ds-msg.ai .msg-content ol {
+        margin: 4px 0 8px 0; padding-left: 20px;
+      }
+      .ds-msg.ai .msg-content li { margin-bottom: 2px; line-height: 1.6; }
+      .ds-msg.ai .msg-content code {
+        font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+        font-size: 12px; background: var(--ds-bg-surface0);
+        padding: 1px 5px; border-radius: 4px;
+        color: var(--ds-accent-mauve);
+      }
+      .ds-msg.ai .msg-content pre {
+        margin: 8px 0; border-radius: 8px; overflow: hidden;
+        background: var(--ds-bg-crust);
+      }
+      .ds-msg.ai .msg-content pre code {
+        display: block; padding: 12px 14px; overflow-x: auto;
+        font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+        font-size: 12px; line-height: 1.5; color: var(--ds-text-code);
+        background: transparent; border-radius: 0;
+      }
+      .ds-msg.ai .msg-content blockquote {
+        margin: 8px 0; padding: 8px 14px;
+        border-left: 3px solid var(--ds-accent-blue);
+        background: var(--ds-bg-surface0); border-radius: 0 6px 6px 0;
+        color: var(--ds-text-secondary);
+      }
+      .ds-msg.ai .msg-content a {
+        color: var(--ds-accent-blue); text-decoration: none;
+      }
+      .ds-msg.ai .msg-content a:hover { text-decoration: underline; }
+      .ds-msg.ai .msg-content hr {
+        margin: 12px 0; border: none; border-top: 1px solid var(--ds-bg-surface1);
+      }
+      .ds-msg.ai .msg-content strong { font-weight: 600; }
+      .ds-msg.ai .msg-content em { font-style: italic; }
 
       /* Thinking: collapsible, amber/gold accent */
       .ds-msg.thinking {
@@ -968,7 +1021,12 @@
 
     const contentEl = document.createElement('div');
     contentEl.className = 'msg-content';
-    contentEl.textContent = content;
+    // Render Markdown for AI responses, plain text for everything else
+    if (type === 'ai') {
+      contentEl.innerHTML = renderMarkdown(content);
+    } else {
+      contentEl.textContent = content;
+    }
     el.appendChild(contentEl);
 
     messagesContainer.appendChild(el);
@@ -1005,7 +1063,7 @@
     } else {
       currentAiContent += delta;
       const contentEl = currentAiBubble.querySelector('.msg-content');
-      if (contentEl) contentEl.textContent += delta;
+      if (contentEl) contentEl.innerHTML = renderMarkdown(currentAiContent);
     }
     scrollMessagesToBottom();
   }
@@ -1132,6 +1190,133 @@
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+  }
+
+  // ─── Markdown Renderer ─────────────────────────────────────
+
+  function renderMarkdown(text) {
+    if (!text) return '';
+    // Escape HTML entities first
+    var html = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    // Extract and protect fenced code blocks
+    var codeBlocks = [];
+    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, function(_, lang, code) {
+      var idx = codeBlocks.length;
+      codeBlocks.push({ lang: lang || '', code: code.trim() });
+      return '\x00CODE' + idx + '\x00';
+    });
+
+    // Inline code (before other inline formatting)
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+    // Bold+Italic, Bold, Italic
+    html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+    // Links
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+    // Process line by line for block elements
+    var lines = html.split('\n');
+    var result = [];
+    var inList = false;
+    var listType = '';
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+
+      // Pass through code block placeholders
+      if (line.indexOf('\x00CODE') !== -1) {
+        if (inList) { result.push('</' + listType + '>'); inList = false; }
+        result.push(line);
+        continue;
+      }
+
+      // Empty line closes list
+      if (line.trim() === '') {
+        if (inList) { result.push('</' + listType + '>'); inList = false; }
+        result.push('');
+        continue;
+      }
+
+      // Headings
+      var hm = line.match(/^(#{1,6}) (.+)$/);
+      if (hm) {
+        if (inList) { result.push('</' + listType + '>'); inList = false; }
+        result.push('<h' + hm[1].length + '>' + hm[2] + '</h' + hm[1].length + '>');
+        continue;
+      }
+
+      // Horizontal rule
+      if (/^(-{3,}|\*{3,})$/.test(line.trim())) {
+        if (inList) { result.push('</' + listType + '>'); inList = false; }
+        result.push('<hr>');
+        continue;
+      }
+
+      // Blockquote
+      var bq = line.match(/^> (.+)$/);
+      if (bq) {
+        if (inList) { result.push('</' + listType + '>'); inList = false; }
+        result.push('<blockquote>' + bq[1] + '</blockquote>');
+        continue;
+      }
+
+      // Unordered list
+      var ul = line.match(/^[\*\-] (.+)$/);
+      if (ul) {
+        if (!inList || listType !== 'ul') {
+          if (inList) result.push('</' + listType + '>');
+          result.push('<ul>');
+          inList = true;
+          listType = 'ul';
+        }
+        result.push('<li>' + ul[1] + '</li>');
+        continue;
+      }
+
+      // Ordered list
+      var ol = line.match(/^\d+\. (.+)$/);
+      if (ol) {
+        if (!inList || listType !== 'ol') {
+          if (inList) result.push('</' + listType + '>');
+          result.push('<ol>');
+          inList = true;
+          listType = 'ol';
+        }
+        result.push('<li>' + ol[1] + '</li>');
+        continue;
+      }
+
+      // Regular text line
+      if (inList) { result.push('</' + listType + '>'); inList = false; }
+      result.push(line);
+    }
+
+    if (inList) { result.push('</' + listType + '>'); }
+
+    html = result.join('\n');
+
+    // Wrap paragraphs: text blocks separated by blank lines
+    html = html.replace(/(?:^|\n\n)((?!<(?:h[1-6]|ul|ol|li|blockquote|pre|hr|table|div|p)\b)[^\n]+(?:\n(?!\n)[^\n]+)*)/g, function(_, text) {
+      var trimmed = text.trim();
+      if (!trimmed) return '';
+      return '\n\n<p>' + trimmed.replace(/\n/g, '<br>') + '</p>';
+    });
+
+    // Restore code blocks
+    html = html.replace(/\x00CODE(\d+)\x00/g, function(_, idx) {
+      var block = codeBlocks[parseInt(idx)];
+      var langClass = block.lang ? ' class="language-' + block.lang + '"' : '';
+      return '<pre><code' + langClass + '>' + block.code + '</code></pre>';
+    });
+
+    return html.trim();
   }
 
   // ─── Input / Send Flow ───────────────────────────────────────
