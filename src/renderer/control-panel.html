@@ -6,34 +6,58 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
-    /* ===== Theme: Dark (Catppuccin Mocha) ===== */
-    body[data-theme="dark"] {
-      --ds-bg-base: #1e1e2e;
-      --ds-bg-mantle: #181825;
-      --ds-bg-surface0: #313244;
-      --ds-bg-surface1: #45475a;
-      --ds-text-primary: #cdd6f4;
-      --ds-text-secondary: #a6adc8;
-      --ds-accent-blue: #89b4fa;
-      --ds-accent-sky: #74c7ec;
-      --ds-accent-green: #a6e3a1;
-      --ds-accent-red: #f38ba8;
-      --ds-accent-maroon: #eba0ac;
+    /* ===== Theme 1: 暗夜紫 ===== */
+    body[data-theme="mocha"] {
+      --ds-bg-base: #1e1e2e; --ds-bg-mantle: #181825;
+      --ds-bg-surface0: #313244; --ds-bg-surface1: #45475a;
+      --ds-text-primary: #cdd6f4; --ds-text-secondary: #a6adc8;
+      --ds-accent-blue: #89b4fa; --ds-accent-sky: #74c7ec;
+      --ds-accent-green: #a6e3a1; --ds-accent-red: #f38ba8; --ds-accent-maroon: #eba0ac;
       --ds-text-on-accent: #1e1e2e;
     }
-    /* ===== Theme: Light (Catppuccin Latte) ===== */
-    body[data-theme="light"] {
-      --ds-bg-base: #eff1f5;
-      --ds-bg-mantle: #e6e9ef;
-      --ds-bg-surface0: #ccd0da;
-      --ds-bg-surface1: #bcc0cc;
-      --ds-text-primary: #4c4f69;
-      --ds-text-secondary: #5c5f77;
-      --ds-accent-blue: #1e66f5;
-      --ds-accent-sky: #04a5e5;
-      --ds-accent-green: #40a02b;
-      --ds-accent-red: #d20f39;
-      --ds-accent-maroon: #e64553;
+    /* ===== Theme 2: 拿铁白 ===== */
+    body[data-theme="latte"] {
+      --ds-bg-base: #eff1f5; --ds-bg-mantle: #e6e9ef;
+      --ds-bg-surface0: #ccd0da; --ds-bg-surface1: #bcc0cc;
+      --ds-text-primary: #4c4f69; --ds-text-secondary: #5c5f77;
+      --ds-accent-blue: #1e66f5; --ds-accent-sky: #04a5e5;
+      --ds-accent-green: #40a02b; --ds-accent-red: #d20f39; --ds-accent-maroon: #e64553;
+      --ds-text-on-accent: #ffffff;
+    }
+    /* ===== Theme 3: 苹果亮色 ===== */
+    body[data-theme="apple-light"] {
+      --ds-bg-base: #f5f5f7; --ds-bg-mantle: #e8e8ed;
+      --ds-bg-surface0: #e8e8ed; --ds-bg-surface1: #d2d2d7;
+      --ds-text-primary: #1d1d1f; --ds-text-secondary: #6e6e73;
+      --ds-accent-blue: #0071e3; --ds-accent-sky: #5ac8fa;
+      --ds-accent-green: #34c759; --ds-accent-red: #ff3b30; --ds-accent-maroon: #ff2d55;
+      --ds-text-on-accent: #ffffff;
+    }
+    /* ===== Theme 4: 苹果暗色 ===== */
+    body[data-theme="apple-dark"] {
+      --ds-bg-base: #1c1c1e; --ds-bg-mantle: #2c2c2e;
+      --ds-bg-surface0: #2c2c2e; --ds-bg-surface1: #3a3a3c;
+      --ds-text-primary: #f5f5f7; --ds-text-secondary: #aeaeb2;
+      --ds-accent-blue: #0a84ff; --ds-accent-sky: #64d2ff;
+      --ds-accent-green: #30d158; --ds-accent-red: #ff453a; --ds-accent-maroon: #ff375f;
+      --ds-text-on-accent: #ffffff;
+    }
+    /* ===== Theme 5: 极简灰 ===== */
+    body[data-theme="slate"] {
+      --ds-bg-base: #1e1e24; --ds-bg-mantle: #18181d;
+      --ds-bg-surface0: #2a2a32; --ds-bg-surface1: #3a3a44;
+      --ds-text-primary: #e4e4ec; --ds-text-secondary: #a0a0b0;
+      --ds-accent-blue: #7c8aff; --ds-accent-sky: #6cc8ff;
+      --ds-accent-green: #6cd4a0; --ds-accent-red: #ff7080; --ds-accent-maroon: #ff90a0;
+      --ds-text-on-accent: #ffffff;
+    }
+    /* ===== Theme 6: 深海蓝 ===== */
+    body[data-theme="ocean"] {
+      --ds-bg-base: #1a2332; --ds-bg-mantle: #151d2b;
+      --ds-bg-surface0: #243447; --ds-bg-surface1: #2d4058;
+      --ds-text-primary: #dce6f5; --ds-text-secondary: #8fa8c8;
+      --ds-accent-blue: #5b9cf5; --ds-accent-sky: #4dc9f6;
+      --ds-accent-green: #4dc9a0; --ds-accent-red: #f57080; --ds-accent-maroon: #f590a0;
       --ds-text-on-accent: #ffffff;
     }
 
@@ -126,7 +150,7 @@
     .toggle input:checked + .slider:before { transform: translateX(18px); }
   </style>
 </head>
-<body data-theme="dark">
+<body data-theme="mocha">
   <div class="tabs">
     <div class="tab active" data-tab="status">状态</div>
     <div class="tab" data-tab="tools">工具</div>
@@ -200,12 +224,16 @@
         <span class="slider"></span>
       </label>
     </div>
-    <div class="setting-group" style="display: flex; justify-content: space-between; align-items: center;">
-      <label style="margin-bottom: 0;">亮色主题</label>
-      <label class="toggle">
-        <input type="checkbox" id="cp-theme-toggle">
-        <span class="slider"></span>
-      </label>
+    <div class="setting-group">
+      <label>主题配色</label>
+      <select id="cp-theme-select">
+        <option value="mocha">暗夜紫</option>
+        <option value="latte">拿铁白</option>
+        <option value="apple-light">苹果亮色</option>
+        <option value="apple-dark">苹果暗色</option>
+        <option value="slate">极简灰</option>
+        <option value="ocean">深海蓝</option>
+      </select>
     </div>
     <div style="margin-top: 20px; text-align: center;">
       <button class="btn btn-primary" id="cp-save-settings">💾 保存设置</button>
@@ -219,16 +247,17 @@
     }
 
     // Theme management
+    var THEME_LIST = ['mocha','latte','apple-light','apple-dark','slate','ocean'];
     function applyTheme(theme) {
       document.body.setAttribute('data-theme', theme);
-      document.getElementById('cp-theme-toggle').checked = (theme === 'light');
+      var sel = document.getElementById('cp-theme-select');
+      if (sel) sel.value = theme;
     }
 
-    function toggleTheme() {
-      const isLight = document.getElementById('cp-theme-toggle').checked;
-      const theme = isLight ? 'light' : 'dark';
+    function onThemeChange() {
+      var theme = document.getElementById('cp-theme-select').value;
       applyTheme(theme);
-      const dsAgent = getDsAgent();
+      var dsAgent = getDsAgent();
       if (dsAgent) {
         dsAgent.setConfig('theme', theme).catch(function() {});
       }
@@ -337,7 +366,7 @@
       const siteSelect = document.getElementById('cp-site-select').value;
       const maxSteps = document.getElementById('cp-max-steps').value;
       const confirmTools = document.getElementById('cp-confirm-tools').checked;
-      const theme = document.getElementById('cp-theme-toggle').checked ? 'light' : 'dark';
+      const theme = document.getElementById('cp-theme-select').value;
 
       try {
         await dsAgent.setConfig('max_steps', parseInt(maxSteps));
@@ -364,7 +393,7 @@
     // Event listeners
     document.getElementById('cp-refresh').addEventListener('click', refreshStatus);
     document.getElementById('cp-refresh-tools').addEventListener('click', refreshTools);
-    document.getElementById('cp-theme-toggle').addEventListener('change', toggleTheme);
+    document.getElementById('cp-theme-select').addEventListener('change', onThemeChange);
 
     // Initial load — wait for dsAgent to be ready
     async function initPanel() {
@@ -388,11 +417,13 @@
           }
 
           // Load theme
-          const savedTheme = await dsAgent.getConfig('theme');
-          if (savedTheme === 'light' || savedTheme === 'dark') {
+          var savedTheme = await dsAgent.getConfig('theme');
+          if (savedTheme === 'dark') savedTheme = 'mocha';
+          if (savedTheme === 'light') savedTheme = 'latte';
+          if (savedTheme && THEME_LIST.indexOf(savedTheme) !== -1) {
             applyTheme(savedTheme);
           } else {
-            applyTheme('dark');
+            applyTheme('mocha');
           }
         } catch (err) {
           console.error('[Control Panel] load settings error:', err);
@@ -422,8 +453,10 @@
               if (v != null) document.getElementById('cp-confirm-tools').checked = v;
             }).catch(() => {});
             agent.getConfig('theme').then(v => {
-              if (v === 'light' || v === 'dark') applyTheme(v);
-              else applyTheme('dark');
+              if (v === 'dark') v = 'mocha';
+              if (v === 'light') v = 'latte';
+              if (v && THEME_LIST.indexOf(v) !== -1) applyTheme(v);
+              else applyTheme('mocha');
             }).catch(() => {});
             refreshStatus();
             refreshTools();

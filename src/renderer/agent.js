@@ -45,7 +45,9 @@
   let thinkingExpanded = true;      // Whether thinking bubble is expanded
   let lastStreamType = null;        // 'thinking' | 'response' | null — tracks current stream phase for interleaved think/response
   let isComposing = false;          // IME composition state (Chinese/Japanese input)
-  let currentTheme = 'dark';         // 'dark' | 'light'
+  let currentTheme = 'mocha';        // 'mocha'|'latte'|'apple-light'|'apple-dark'|'slate'|'ocean'
+  const THEME_LIST = ['mocha','latte','apple-light','apple-dark','slate','ocean'];
+  const THEME_NAMES = { mocha:'暗夜紫', latte:'拿铁白', 'apple-light':'苹果亮色', 'apple-dark':'苹果暗色', slate:'极简灰', ocean:'深海蓝' };
   let userScrolledUp = false;       // Whether user has manually scrolled up (pause auto-scroll)
   let scrollToBottomBtn = null;     // "Scroll to bottom" button
 
@@ -76,16 +78,21 @@
     const headerActions = document.createElement('div');
     headerActions.id = 'ds-agent-header-actions';
 
-    // Theme toggle button
-    const themeBtn = document.createElement('button');
-    themeBtn.id = 'ds-agent-theme-toggle';
-    themeBtn.title = '切换亮色/暗色主题';
-    themeBtn.textContent = '☀️';
-    themeBtn.addEventListener('click', (e) => {
+    // Theme select dropdown
+    var themeSelect = document.createElement('select');
+    themeSelect.id = 'ds-agent-theme-select';
+    themeSelect.title = '选择主题';
+    for (var i = 0; i < THEME_LIST.length; i++) {
+      var opt = document.createElement('option');
+      opt.value = THEME_LIST[i];
+      opt.textContent = THEME_NAMES[THEME_LIST[i]];
+      themeSelect.appendChild(opt);
+    }
+    themeSelect.addEventListener('change', function(e) {
       e.stopPropagation();
-      toggleTheme();
+      onThemeChange();
     });
-    headerActions.appendChild(themeBtn);
+    headerActions.appendChild(themeSelect);
 
     // Mode toggle button
     const modeBtn = document.createElement('button');
@@ -335,59 +342,83 @@
     const style = document.createElement('style');
     style.id = 'ds-agent-styles';
     style.textContent = `
-      /* ===== Theme: Dark (Catppuccin Mocha) ===== */
-      body[data-ds-agent-theme="dark"] {
-        --ds-bg-base: #1e1e2e;
-        --ds-bg-mantle: #181825;
-        --ds-bg-crust: #11111b;
-        --ds-bg-surface0: #313244;
-        --ds-bg-surface1: #45475a;
-        --ds-bg-surface2: #585b70;
-        --ds-bg-stats-card: #1e2030;
-        --ds-bg-hover: #252535;
-        --ds-text-primary: #cdd6f4;
-        --ds-text-secondary: #a6adc8;
-        --ds-text-code: #bac2de;
-        --ds-text-muted: #6c7086;
-        --ds-text-on-accent: #1e1e2e;
-        --ds-accent-blue: #89b4fa;
-        --ds-accent-sky: #74c7ec;
-        --ds-accent-mauve: #cba6f7;
-        --ds-accent-green: #a6e3a1;
-        --ds-accent-red: #f38ba8;
-        --ds-accent-maroon: #eba0ac;
+      /* ===== Theme 1: 暗夜紫 (Catppuccin Mocha) ===== */
+      body[data-ds-agent-theme="mocha"] {
+        --ds-bg-base: #1e1e2e; --ds-bg-mantle: #181825; --ds-bg-crust: #11111b;
+        --ds-bg-surface0: #313244; --ds-bg-surface1: #45475a; --ds-bg-surface2: #585b70;
+        --ds-bg-stats-card: #1e2030; --ds-bg-hover: #252535;
+        --ds-text-primary: #cdd6f4; --ds-text-secondary: #a6adc8;
+        --ds-text-code: #bac2de; --ds-text-muted: #6c7086; --ds-text-on-accent: #1e1e2e;
+        --ds-accent-blue: #89b4fa; --ds-accent-sky: #74c7ec; --ds-accent-mauve: #cba6f7;
+        --ds-accent-green: #a6e3a1; --ds-accent-red: #f38ba8; --ds-accent-maroon: #eba0ac;
         --ds-accent-yellow: #f9e2af;
-        --ds-shadow: 0 8px 32px rgba(0,0,0,0.5);
-        --ds-shadow-fab: 0 4px 16px rgba(0,0,0,0.3);
-        --ds-shadow-scroll: 0 2px 8px rgba(0,0,0,0.3);
-        --ds-border-subtle: rgba(49, 50, 68, 0.4);
+        --ds-shadow: 0 8px 32px rgba(0,0,0,0.5); --ds-shadow-fab: 0 4px 16px rgba(0,0,0,0.3);
+        --ds-shadow-scroll: 0 2px 8px rgba(0,0,0,0.3); --ds-border-subtle: rgba(49,50,68,0.4);
       }
-      /* ===== Theme: Light (Catppuccin Latte) ===== */
-      body[data-ds-agent-theme="light"] {
-        --ds-bg-base: #eff1f5;
-        --ds-bg-mantle: #e6e9ef;
-        --ds-bg-crust: #dce0e8;
-        --ds-bg-surface0: #ccd0da;
-        --ds-bg-surface1: #bcc0cc;
-        --ds-bg-surface2: #acb0be;
-        --ds-bg-stats-card: #e6e9ef;
-        --ds-bg-hover: #e6e9ef;
-        --ds-text-primary: #4c4f69;
-        --ds-text-secondary: #5c5f77;
-        --ds-text-code: #6c6f85;
-        --ds-text-muted: #9ca0b0;
-        --ds-text-on-accent: #ffffff;
-        --ds-accent-blue: #1e66f5;
-        --ds-accent-sky: #04a5e5;
-        --ds-accent-mauve: #8839ef;
-        --ds-accent-green: #40a02b;
-        --ds-accent-red: #d20f39;
-        --ds-accent-maroon: #e64553;
+      /* ===== Theme 2: 拿铁白 (Catppuccin Latte) ===== */
+      body[data-ds-agent-theme="latte"] {
+        --ds-bg-base: #eff1f5; --ds-bg-mantle: #e6e9ef; --ds-bg-crust: #dce0e8;
+        --ds-bg-surface0: #ccd0da; --ds-bg-surface1: #bcc0cc; --ds-bg-surface2: #acb0be;
+        --ds-bg-stats-card: #e6e9ef; --ds-bg-hover: #e6e9ef;
+        --ds-text-primary: #4c4f69; --ds-text-secondary: #5c5f77;
+        --ds-text-code: #6c6f85; --ds-text-muted: #9ca0b0; --ds-text-on-accent: #ffffff;
+        --ds-accent-blue: #1e66f5; --ds-accent-sky: #04a5e5; --ds-accent-mauve: #8839ef;
+        --ds-accent-green: #40a02b; --ds-accent-red: #d20f39; --ds-accent-maroon: #e64553;
         --ds-accent-yellow: #df8e1d;
-        --ds-shadow: 0 8px 32px rgba(0,0,0,0.12);
-        --ds-shadow-fab: 0 4px 16px rgba(0,0,0,0.1);
-        --ds-shadow-scroll: 0 2px 8px rgba(0,0,0,0.1);
-        --ds-border-subtle: rgba(204, 208, 218, 0.4);
+        --ds-shadow: 0 8px 32px rgba(0,0,0,0.12); --ds-shadow-fab: 0 4px 16px rgba(0,0,0,0.1);
+        --ds-shadow-scroll: 0 2px 8px rgba(0,0,0,0.1); --ds-border-subtle: rgba(204,208,218,0.4);
+      }
+      /* ===== Theme 3: 苹果亮色 (Apple Light) ===== */
+      body[data-ds-agent-theme="apple-light"] {
+        --ds-bg-base: #f5f5f7; --ds-bg-mantle: #e8e8ed; --ds-bg-crust: #d2d2d7;
+        --ds-bg-surface0: #e8e8ed; --ds-bg-surface1: #d2d2d7; --ds-bg-surface2: #c7c7cc;
+        --ds-bg-stats-card: #ffffff; --ds-bg-hover: #e8e8ed;
+        --ds-text-primary: #1d1d1f; --ds-text-secondary: #6e6e73;
+        --ds-text-code: #48484a; --ds-text-muted: #aeaeb2; --ds-text-on-accent: #ffffff;
+        --ds-accent-blue: #0071e3; --ds-accent-sky: #5ac8fa; --ds-accent-mauve: #af52de;
+        --ds-accent-green: #34c759; --ds-accent-red: #ff3b30; --ds-accent-maroon: #ff2d55;
+        --ds-accent-yellow: #ff9f0a;
+        --ds-shadow: 0 8px 32px rgba(0,0,0,0.08); --ds-shadow-fab: 0 4px 16px rgba(0,0,0,0.06);
+        --ds-shadow-scroll: 0 2px 8px rgba(0,0,0,0.06); --ds-border-subtle: rgba(210,210,215,0.6);
+      }
+      /* ===== Theme 4: 苹果暗色 (Apple Dark) ===== */
+      body[data-ds-agent-theme="apple-dark"] {
+        --ds-bg-base: #1c1c1e; --ds-bg-mantle: #2c2c2e; --ds-bg-crust: #121214;
+        --ds-bg-surface0: #2c2c2e; --ds-bg-surface1: #3a3a3c; --ds-bg-surface2: #48484a;
+        --ds-bg-stats-card: #2c2c2e; --ds-bg-hover: #2c2c2e;
+        --ds-text-primary: #f5f5f7; --ds-text-secondary: #aeaeb2;
+        --ds-text-code: #d2d2d7; --ds-text-muted: #636366; --ds-text-on-accent: #ffffff;
+        --ds-accent-blue: #0a84ff; --ds-accent-sky: #64d2ff; --ds-accent-mauve: #bf5af2;
+        --ds-accent-green: #30d158; --ds-accent-red: #ff453a; --ds-accent-maroon: #ff375f;
+        --ds-accent-yellow: #ff9f0a;
+        --ds-shadow: 0 8px 32px rgba(0,0,0,0.4); --ds-shadow-fab: 0 4px 16px rgba(0,0,0,0.25);
+        --ds-shadow-scroll: 0 2px 8px rgba(0,0,0,0.25); --ds-border-subtle: rgba(58,58,60,0.6);
+      }
+      /* ===== Theme 5: 极简灰 (Slate) ===== */
+      body[data-ds-agent-theme="slate"] {
+        --ds-bg-base: #1e1e24; --ds-bg-mantle: #18181d; --ds-bg-crust: #121216;
+        --ds-bg-surface0: #2a2a32; --ds-bg-surface1: #3a3a44; --ds-bg-surface2: #4a4a56;
+        --ds-bg-stats-card: #22222a; --ds-bg-hover: #2a2a32;
+        --ds-text-primary: #e4e4ec; --ds-text-secondary: #a0a0b0;
+        --ds-text-code: #c0c0d0; --ds-text-muted: #707080; --ds-text-on-accent: #ffffff;
+        --ds-accent-blue: #7c8aff; --ds-accent-sky: #6cc8ff; --ds-accent-mauve: #b09aff;
+        --ds-accent-green: #6cd4a0; --ds-accent-red: #ff7080; --ds-accent-maroon: #ff90a0;
+        --ds-accent-yellow: #ffc870;
+        --ds-shadow: 0 8px 32px rgba(0,0,0,0.5); --ds-shadow-fab: 0 4px 16px rgba(0,0,0,0.3);
+        --ds-shadow-scroll: 0 2px 8px rgba(0,0,0,0.3); --ds-border-subtle: rgba(42,42,50,0.4);
+      }
+      /* ===== Theme 6: 深海蓝 (Ocean) ===== */
+      body[data-ds-agent-theme="ocean"] {
+        --ds-bg-base: #1a2332; --ds-bg-mantle: #151d2b; --ds-bg-crust: #0f1620;
+        --ds-bg-surface0: #243447; --ds-bg-surface1: #2d4058; --ds-bg-surface2: #3a4f6a;
+        --ds-bg-stats-card: #1e2d40; --ds-bg-hover: #243447;
+        --ds-text-primary: #dce6f5; --ds-text-secondary: #8fa8c8;
+        --ds-text-code: #b0c4dc; --ds-text-muted: #607898; --ds-text-on-accent: #ffffff;
+        --ds-accent-blue: #5b9cf5; --ds-accent-sky: #4dc9f6; --ds-accent-mauve: #9b8ef5;
+        --ds-accent-green: #4dc9a0; --ds-accent-red: #f57080; --ds-accent-maroon: #f590a0;
+        --ds-accent-yellow: #f5c860;
+        --ds-shadow: 0 8px 32px rgba(0,0,0,0.5); --ds-shadow-fab: 0 4px 16px rgba(0,0,0,0.3);
+        --ds-shadow-scroll: 0 2px 8px rgba(0,0,0,0.3); --ds-border-subtle: rgba(36,52,71,0.4);
       }
 
       /* ===== Base Panel ===== */
@@ -430,6 +461,14 @@
         line-height: 1; transition: background 0.15s;
       }
       #ds-agent-header-actions button:hover { background: var(--ds-bg-surface1); }
+  #ds-agent-theme-select {
+    background: var(--ds-bg-surface0); border: 1px solid var(--ds-bg-surface1);
+    color: var(--ds-text-primary); border-radius: 4px; padding: 2px 4px;
+    font-size: 12px; cursor: pointer; outline: none;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  #ds-agent-theme-select:hover { border-color: var(--ds-accent-blue); }
+  #ds-agent-theme-select:focus { border-color: var(--ds-accent-blue); box-shadow: 0 0 0 1px var(--ds-accent-blue); }
       #ds-agent-stop { color: var(--ds-accent-red) !important; }
 
       /* ===== Body ===== */
@@ -957,20 +996,18 @@
 
   // ─── Theme Switching ───────────────────────────────────────
 
-  function toggleTheme() {
-    currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
+  function onThemeChange() {
+    var sel = document.getElementById('ds-agent-theme-select');
+    if (!sel) return;
+    currentTheme = sel.value;
     applyTheme();
-    // Persist to config
-    window.dsAgent?.setConfig('theme', currentTheme).catch(() => {});
+    window.dsAgent?.setConfig('theme', currentTheme).catch(function() {});
   }
 
   function applyTheme() {
     document.body.setAttribute('data-ds-agent-theme', currentTheme);
-    const themeBtn = document.getElementById('ds-agent-theme-toggle');
-    if (themeBtn) {
-      themeBtn.textContent = currentTheme === 'dark' ? '☀️' : '🌙';
-      themeBtn.title = currentTheme === 'dark' ? '切换亮色主题' : '切换暗色主题';
-    }
+    var sel = document.getElementById('ds-agent-theme-select');
+    if (sel) sel.value = currentTheme;
   }
 
   // ─── Panel Modes ─────────────────────────────────────────────
@@ -2322,13 +2359,16 @@
 
     // 3.5 Load theme from config
     try {
-      const savedTheme = await window.dsAgent.getConfig('theme');
-      if (savedTheme === 'light' || savedTheme === 'dark') {
+      var savedTheme = await window.dsAgent.getConfig('theme');
+      // Migrate old 'dark'/'light' values
+      if (savedTheme === 'dark') savedTheme = 'mocha';
+      if (savedTheme === 'light') savedTheme = 'latte';
+      if (savedTheme && THEME_LIST.indexOf(savedTheme) !== -1) {
         currentTheme = savedTheme;
-        console.log(`${PREFIX} Theme set to ${currentTheme} from config`);
+        console.log(PREFIX + ' Theme set to ' + currentTheme + ' from config');
       }
     } catch (err) {
-      console.log(`${PREFIX} Could not read theme config, using default ${currentTheme}`);
+      console.log(PREFIX + ' Could not read theme config, using default ' + currentTheme);
     }
     applyTheme();
 
