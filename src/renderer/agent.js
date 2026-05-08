@@ -575,6 +575,24 @@
       }
       .ds-msg.ai .msg-content strong { font-weight: 600; }
       .ds-msg.ai .msg-content em { font-style: italic; }
+      .ds-msg.ai .msg-content table {
+        width: 100%; margin: 8px 0; border-collapse: collapse;
+        font-size: 12px;
+      }
+      .ds-msg.ai .msg-content th,
+      .ds-msg.ai .msg-content td {
+        padding: 6px 10px; border: 1px solid var(--ds-bg-surface1);
+        text-align: left;
+      }
+      .ds-msg.ai .msg-content th {
+        background: var(--ds-bg-surface0); font-weight: 600;
+      }
+      .ds-msg.ai .msg-content td {
+        background: transparent;
+      }
+      .ds-msg.ai .msg-content tr:nth-child(even) td {
+        background: var(--ds-bg-mantle);
+      }
 
       /* Thinking: collapsible, amber/gold accent */
       .ds-msg.thinking {
@@ -1202,12 +1220,85 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
 
+    // Normalize inline tables to block-level (tables embedded in paragraph text)
+    // Converts: "text | H1 | H2 | |----|----| | D1 | D2 | text"
+    // To:       "text\n\n| H1 | H2 |\n|----|----|\n| D1 | D2 |\n\ntext"
+    html = html.replace(
+      /([^\n]*?)((?:\|[^|]+\|\s*)+)((?:\|[\s\-:]+\|\s*)+)((?:\|[^|]+\|\s*)+)([^\n]*)/g,
+      function(_, before, headerStr, sepStr, dataStr, after) {
+        var headerCells = headerStr.match(/\|[^|]+\|/g) || [];
+        var sepCells = sepStr.match(/\|[\s\-:]+\|/g) || [];
+        var dataCells = dataStr.match(/\|[^|]+\|/g) || [];
+        if (headerCells.length === 0 || sepCells.length === 0 || dataCells.length === 0) return _;
+        if (headerCells.length !== sepCells.length) return _;
+        if (dataCells.length % headerCells.length !== 0) return _;
+        var numCols = headerCells.length;
+
+        // Merge cells sharing the | delimiter: | A || B | → | A | B |
+        function mergeRow(cells) {
+          var row = cells[0];
+          for (var i = 1; i < cells.length; i++) {
+            row += cells[i].substring(1); // remove leading |
+          }
+          return row;
+        }
+        var headerRow = mergeRow(headerCells);
+        var sepRow = mergeRow(sepCells);
+        var dataRows = [];
+        for (var r = 0; r < dataCells.length; r += numCols) {
+          dataRows.push(mergeRow(dataCells.slice(r, r + numCols)));
+        }
+        before = before.trim();
+        after = after.trim();
+        return (before ? before + '\n\n' : '') + headerRow + '\n' + sepRow + '\n' + dataRows.join('\n') + (after ? '\n\n' + after : '');
+      }
+    );
+
     // Extract and protect fenced code blocks
     var codeBlocks = [];
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, function(_, lang, code) {
       var idx = codeBlocks.length;
       codeBlocks.push({ lang: lang || '', code: code.trim() });
       return '\x00CODE' + idx + '\x00';
+    });
+
+    // Extract and protect tables
+    var tables = [];
+    html = html.replace(/(\|[^\n]+\|\n\|[\s\-\|:]+\|\n(?:\|[^\n]+\|\n?)*)/g, function(match) {
+      var idx = tables.length;
+      var tblLines = match.trim().split('\n');
+      var headerLine = tblLines[0];
+      var dataLines = tblLines.slice(2);
+
+      // Parse header cells
+      var headers = headerLine.split('|').filter(function(c) { return c.trim() !== ''; });
+
+      // Parse alignment from separator line
+      var sepLine = tblLines[1];
+      var aligns = sepLine.split('|').filter(function(c) { return c.trim() !== ''; });
+
+      var tblHtml = '<table><thead><tr>';
+      for (var h = 0; h < headers.length; h++) {
+        var align = '';
+        var a = aligns[h] ? aligns[h].trim() : '';
+        if (a.indexOf(':') === 0 && a.lastIndexOf(':') === a.length - 1 && a.length > 1) align = ' align="center"';
+        else if (a.lastIndexOf(':') === a.length - 1 && a.length > 1) align = ' align="right"';
+        tblHtml += '<th' + align + '>' + headers[h].trim() + '</th>';
+      }
+      tblHtml += '</tr></thead><tbody>';
+
+      for (var d = 0; d < dataLines.length; d++) {
+        var cells = dataLines[d].split('|').filter(function(c) { return c.trim() !== ''; });
+        tblHtml += '<tr>';
+        for (var c = 0; c < cells.length; c++) {
+          tblHtml += '<td>' + cells[c].trim() + '</td>';
+        }
+        tblHtml += '</tr>';
+      }
+      tblHtml += '</tbody></table>';
+
+      tables.push(tblHtml);
+      return '\x00TABLE' + idx + '\x00';
     });
 
     // Inline code (before other inline formatting)
@@ -1307,6 +1398,11 @@
       var trimmed = text.trim();
       if (!trimmed) return '';
       return '\n\n<p>' + trimmed.replace(/\n/g, '<br>') + '</p>';
+    });
+
+    // Restore tables
+    html = html.replace(/\x00TABLE(\d+)\x00/g, function(_, idx) {
+      return tables[parseInt(idx)];
     });
 
     // Restore code blocks
