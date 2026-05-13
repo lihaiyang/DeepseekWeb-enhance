@@ -12,6 +12,7 @@
 const { app, BrowserWindow, ipcMain, session, Tray, Menu, nativeImage, shell, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { JsonStore } = require('../server/storage/JsonStore');
 
 // ─── Constants ────────────────────────────────────────────────
 const IS_DEV = process.argv.includes('--dev');
@@ -330,112 +331,49 @@ function setupIPC() {
     saveConfig(data);
   });
 
-  // ─── Conversation Management ──────────────────────────────
-  // Conversations are stored as JSON files in {userData}/conversations/
-  const conversationsDir = path.join(app.getPath('userData'), 'conversations');
-  console.log(`[DS Agent] Conversations dir: ${conversationsDir}`);
+  // ─── Conversation Store ────────────────────────────────────
+  // 存储层抽象：后续可替换为 SqliteStore，接口不变
+  const conversationsDir = path.join(require('os').homedir(), '.ds-agent', 'conversations');
+  const convStore = new JsonStore(conversationsDir);
+  console.log(`[DS Agent] Conversation store: ${conversationsDir}`);
 
-  function ensureConversationsDir() {
-    if (!fs.existsSync(conversationsDir)) {
-      fs.mkdirSync(conversationsDir, { recursive: true });
-      console.log(`[DS Agent] Created conversations dir: ${conversationsDir}`);
-    }
-  }
-
-  function getConversationPath(id) {
-    return path.join(conversationsDir, id + '.json');
-  }
-
-  // List all conversations (summary only, no messages)
   ipcMain.handle('conversation:list', async () => {
-    const t0 = Date.now();
     try {
-      ensureConversationsDir();
-      const files = fs.readdirSync(conversationsDir).filter(f => f.endsWith('.json'));
-      const conversations = [];
-      let skipped = 0;
-      for (const file of files) {
-        try {
-          const data = JSON.parse(fs.readFileSync(path.join(conversationsDir, file), 'utf-8'));
-          conversations.push({
-            id: data.id,
-            title: data.title || '未命名会话',
-            createdAt: data.createdAt || 0,
-            updatedAt: data.updatedAt || 0,
-            messageCount: (data.messages || []).length,
-          });
-        } catch (e) { skipped++; }
-      }
-      conversations.sort((a, b) => b.updatedAt - a.updatedAt);
-      console.log(`[DS Agent] conversation:list → ${conversations.length} convs, ${skipped} skipped, ${Date.now() - t0}ms`);
-      return { success: true, data: conversations };
-    } catch (err) {
-      console.error(`[DS Agent] conversation:list ERROR:`, err.message);
-      return { success: false, error: err.message };
-    }
-  });
-
-  // Get a specific conversation by ID
-  ipcMain.handle('conversation:get', async (_event, id) => {
-    const t0 = Date.now();
-    try {
-      ensureConversationsDir();
-      const filePath = getConversationPath(id);
-      if (!fs.existsSync(filePath)) {
-        console.log(`[DS Agent] conversation:get ${id} → not found`);
-        return { success: false, error: '会话不存在' };
-      }
-      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      const msgCount = (data.messages || []).length;
-      console.log(`[DS Agent] conversation:get ${id} → ${msgCount} msgs, ${Date.now() - t0}ms`);
+      const data = await convStore.list();
       return { success: true, data };
     } catch (err) {
-      console.error(`[DS Agent] conversation:get ${id} ERROR:`, err.message);
+      console.error('[DS Agent] conversation:list ERROR:', err.message);
       return { success: false, error: err.message };
     }
   });
 
-  // Save (create or update) a conversation
-  ipcMain.handle('conversation:save', async (_event, conversation) => {
-    const t0 = Date.now();
+  ipcMain.handle('conversation:get', async (_e, id) => {
     try {
-      ensureConversationsDir();
-      if (!conversation.id) {
-        return { success: false, error: '缺少会话 ID' };
-      }
-      const filePath = getConversationPath(conversation.id);
-      const msgCount = (conversation.messages || []).length;
-      const data = {
-        id: conversation.id,
-        title: conversation.title || '未命名会话',
-        messages: conversation.messages || [],
-        createdAt: conversation.createdAt || Date.now(),
-        updatedAt: Date.now(),
-      };
-      const json = JSON.stringify(data, null, 2);
-      fs.writeFileSync(filePath, json, 'utf-8');
-      console.log(`[DS Agent] conversation:save ${conversation.id} → ${msgCount} msgs, ${json.length} bytes, ${Date.now() - t0}ms`);
-      return { success: true };
+      const data = await convStore.get(id);
+      if (!data) return { success: false, error: '会话不存在' };
+      return { success: true, data };
     } catch (err) {
-      console.error(`[DS Agent] conversation:save ${conversation.id} ERROR:`, err.message);
+      console.error('[DS Agent] conversation:get ERROR:', err.message);
       return { success: false, error: err.message };
     }
   });
 
-  // Delete a conversation
-  ipcMain.handle('conversation:delete', async (_event, id) => {
+  ipcMain.handle('conversation:save', async (_e, conv) => {
     try {
-      ensureConversationsDir();
-      const filePath = getConversationPath(id);
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-        console.log(`[DS Agent] conversation:delete ${id} → deleted`);
-      } else {
-        console.log(`[DS Agent] conversation:delete ${id} → not found (no-op)`);
-      }
+      await convStore.save(conv);
       return { success: true };
     } catch (err) {
-      console.error(`[DS Agent] conversation:delete ${id} ERROR:`, err.message);
+      console.error('[DS Agent] conversation:save ERROR:', err.message);
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('conversation:delete', async (_e, id) => {
+    try {
+      await convStore.delete(id);
+      return { success: true };
+    } catch (err) {
+      console.error('[DS Agent] conversation:delete ERROR:', err.message);
       return { success: false, error: err.message };
     }
   });
@@ -517,4 +455,82 @@ app.on('web-contents-created', (_event, contents) => {
     }
     return { action: 'allow' };
   });
+});
+
+// ─── Prompt Management Bridge ──────────────────────────────
+// These handlers execute JavaScript in the chat page's main world
+// to access PromptManager, ContextManager, and ConversationManager.
+
+function execInChat(code) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return Promise.reject(new Error('Chat window not available'));
+  }
+  return mainWindow.webContents.executeJavaScript(code);
+}
+
+// Prompt sections
+ipcMain.handle('prompt:get-sections', async () => {
+  try {
+    return await execInChat(
+      '(function(){var pm=window.__dsAgentPromptManager;if(!pm)return{};var names=pm.getSectionNames();var r={};for(var i=0;i<names.length;i++){r[names[i]]=pm.getSection(names[i]);}return r;})()'
+    );
+  } catch (e) { return {}; }
+});
+
+ipcMain.handle('prompt:set-section', async (_e, name, value) => {
+  try {
+    return await execInChat(
+      '(function(){var pm=window.__dsAgentPromptManager;if(!pm)return false;pm.setSection(' + JSON.stringify(name) + ',' + JSON.stringify(value) + ');return true;})()'
+    );
+  } catch (e) { return false; }
+});
+
+ipcMain.handle('prompt:reset-section', async (_e, name) => {
+  try {
+    return await execInChat(
+      '(function(){var pm=window.__dsAgentPromptManager;if(!pm)return false;pm.resetSection(' + (name ? JSON.stringify(name) : 'null') + ');return true;})()'
+    );
+  } catch (e) { return false; }
+});
+
+ipcMain.handle('prompt:get-defaults', async () => {
+  try {
+    return await execInChat(
+      '(function(){var pm=window.__dsAgentPromptManager;if(!pm)return{};var names=pm.getSectionNames();var r={};for(var i=0;i<names.length;i++){r[names[i]]=pm.getDefault(names[i]);}return r;})()'
+    );
+  } catch (e) { return {}; }
+});
+
+// Context config
+ipcMain.handle('context:get-config', async () => {
+  try {
+    return await execInChat(
+      '(function(){var cm=window.__dsAgentContextManager;if(!cm)return{};return cm.getConfig();})()'
+    );
+  } catch (e) { return {}; }
+});
+
+ipcMain.handle('context:set-config', async (_e, key, value) => {
+  try {
+    return await execInChat(
+      '(function(){var cm=window.__dsAgentContextManager;if(!cm)return false;cm.setConfig(' + JSON.stringify(key) + ',' + JSON.stringify(value) + ');return true;})()'
+    );
+  } catch (e) { return false; }
+});
+
+// Conversation switching
+ipcMain.handle('conversation:switch', async (_e, id) => {
+  try {
+    return await execInChat(
+      '(function(){var fn=window.__dsAgentSwitchConversation;if(!fn)return false;fn(' + JSON.stringify(id) + ').then(function(){return true;}).catch(function(){return false;});})()'
+    );
+  } catch (e) { return false; }
+});
+
+ipcMain.handle('conversation:get-current-id', async () => {
+  try {
+    return await execInChat(
+      '(function(){var cm=window.__dsAgentConversationManager;if(!cm)return null;return cm.getCurrentId();})()'
+    );
+  } catch (e) { return null; }
 });

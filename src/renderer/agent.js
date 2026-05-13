@@ -234,14 +234,20 @@ let contextManager = null;        // ContextManager instance (context window man
     contextPanel.id = 'ds-agent-context-panel';
     contextPanel.innerHTML = `
       <div id="ds-agent-context-tabs">
-        <button class="ds-context-tab active" data-tab="files">📁 文件</button>
+        <button class="ds-context-tab active" data-tab="conversations">💬 会话</button>
+        <button class="ds-context-tab" data-tab="files">📁 文件</button>
         <button class="ds-context-tab" data-tab="preview">📄 预览</button>
         <button class="ds-context-tab" data-tab="stats">📊 统计</button>
       </div>
       <div id="ds-agent-context-content">
-        <div class="ds-context-pane active" data-pane="files">
+        <div class="ds-context-pane" data-pane="files">
           <div id="ds-agent-file-tree">
             <div class="context-empty">等待 Agent 浏览文件...</div>
+          </div>
+        </div>
+        <div class="ds-context-pane active" data-pane="conversations">
+          <div id="ds-agent-conversation-list">
+            <div class="context-empty">加载中...</div>
           </div>
         </div>
         <div class="ds-context-pane" data-pane="preview">
@@ -291,12 +297,7 @@ let contextManager = null;        // ContextManager instance (context window man
       const tabs = contextPanel.querySelectorAll('.ds-context-tab');
       tabs.forEach(tab => {
         tab.addEventListener('click', () => {
-          contextTab = tab.dataset.tab;
-          tabs.forEach(t => t.classList.remove('active'));
-          tab.classList.add('active');
-          const panes = contextPanel.querySelectorAll('.ds-context-pane');
-          panes.forEach(p => p.classList.remove('active'));
-          contextPanel.querySelector('[data-pane="' + contextTab + '"]')?.classList.add('active');
+          switchContextTab(tab.dataset.tab);
         });
       });
     }, 0);
@@ -886,6 +887,36 @@ let contextManager = null;        // ContextManager instance (context window man
       .file-tree-item .file-icon { font-size: 13px; flex-shrink: 0; }
       .file-tree-children { padding-left: 14px; }
 
+      /* Conversation list */
+      #ds-agent-conversation-list { font-size: 12px; }
+      .conv-list-item {
+        padding: 8px 10px; cursor: pointer; border-radius: 6px;
+        color: var(--ds-text-primary); margin-bottom: 4px;
+        transition: background 0.1s; border: 1px solid transparent;
+      }
+      .conv-list-item:hover { background: var(--ds-bg-hover); }
+      .conv-list-item.active { background: var(--ds-bg-surface0); border-color: var(--ds-accent-blue); }
+      .conv-list-item .conv-title {
+        font-weight: 600; font-size: 13px; white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis;
+      }
+      .conv-list-item .conv-meta {
+        color: var(--ds-text-muted); font-size: 11px; margin-top: 2px;
+        display: flex; justify-content: space-between;
+      }
+      .conv-list-item .conv-delete {
+        color: var(--ds-accent-red); cursor: pointer; font-size: 14px;
+        padding: 0 4px; opacity: 0; transition: opacity 0.15s;
+      }
+      .conv-list-item:hover .conv-delete { opacity: 1; }
+      .conv-list-new-btn {
+        display: block; width: 100%; padding: 8px; margin-bottom: 10px;
+        background: var(--ds-bg-surface0); border: 1px dashed var(--ds-bg-surface1);
+        color: var(--ds-accent-blue); border-radius: 6px; cursor: pointer;
+        font-size: 12px; font-family: inherit; transition: all 0.15s;
+      }
+      .conv-list-new-btn:hover { border-color: var(--ds-accent-blue); background: var(--ds-bg-hover); }
+
       /* File preview */
       #ds-agent-file-preview { font-size: 12px; }
       .preview-header {
@@ -1136,7 +1167,12 @@ let contextManager = null;        // ContextManager instance (context window man
     currentAiContent = '';
   }
 
-  function finalizeThinkingBubble() {
+function finalizeThinkingBubble(skipSave) {
+    // Save thinking content to conversation before clearing
+    // skipSave=true when loading from disk (content already persisted)
+    if (!skipSave && currentThinkingContent && conversationManager) {
+      conversationManager.addMessage('thinking', currentThinkingContent);
+    }
     currentThinkingBubble = null;
     currentThinkingContent = '';
   }
@@ -1514,6 +1550,9 @@ let contextManager = null;        // ContextManager instance (context window man
         conversationManager.addMessage('assistant', fullResponse);
       }
 
+      // 刷新侧边栏会话列表（首次对话时确保新会话立即可见）
+      loadConversationList().catch(err => console.error(PREFIX + ' loadConversationList failed:', err));
+
       // Response bubbles are updated in real-time by onThinking/onContent callbacks
       // Check for tool calls and start agent loop if needed
       const calls = checkForToolCalls(fullResponse || '');
@@ -1725,6 +1764,9 @@ let contextManager = null;        // ContextManager instance (context window man
           if (finalResponse) {
             conversationManager.addMessage('assistant', finalResponse);
           }
+
+          // 刷新侧边栏会话列表
+          loadConversationList().catch(err => console.error(PREFIX + ' loadConversationList failed:', err));
         } catch (err) {
           if (agentAbortController.signal.aborted) break;
           console.log(PREFIX + ' DeepSeekClient send failed: ' + err.message);
@@ -1797,13 +1839,72 @@ let contextManager = null;        // ContextManager instance (context window man
     // Stop any running agent loop first
     stopAgentLoop();
 
-    // Save current conversation before creating new one
+    // ConversationManager handles save-before-create internally
     if (conversationManager) {
-      try { await conversationManager.save(); } catch(e) {}
-      conversationManager.newConversation();
+      await conversationManager.newConversation();
     }
 
-    // Clear panel UI
+    clearPanelUI();
+    clickDeepSeekNewChat();
+
+    // 兜底：无论 clickDeepSeekNewChat 是否成功找到按钮，都确保切换到专家模式
+    setTimeout(() => selectExpertMode(), 800);
+  }
+
+  /**
+   * Switch to an existing conversation (called from control panel).
+   * Loads messages from local storage and rebuilds the UI.
+   */
+  async function switchConversation(id) {
+    if (!conversationManager) return;
+
+    // Stop any running agent loop
+    stopAgentLoop();
+
+    // ConversationManager handles save-before-switch internally
+    var ok = await conversationManager.switchTo(id);
+    if (!ok) {
+      console.error(PREFIX + ' Failed to switch to conversation: ' + id);
+      return;
+    }
+
+    // Clear and rebuild UI
+    clearPanelUI();
+
+    // Re-render all messages from memory
+    var messages = conversationManager.getMessages();
+    for (var i = 0; i < messages.length; i++) {
+      var msg = messages[i];
+      switch (msg.role) {
+        case 'user':
+          addMessage('user', msg.content, '你');
+          totalInputChars += msg.content.length;
+          break;
+        case 'assistant':
+          addMessage('ai', msg.content, 'DS Agent');
+          totalOutputChars += msg.content.length;
+          break;
+        case 'thinking':
+          // Render thinking bubble (skipSave: already persisted, don't re-save)
+          addThinkingBubble(msg.content);
+          finalizeThinkingBubble(true);
+          break;
+        case 'tool':
+          // Tool results are shown inline in steps, skip standalone bubbles
+          break;
+      }
+    }
+
+    // Click new chat on DeepSeek side (next send will start fresh)
+    clickDeepSeekNewChat();
+
+    console.log(PREFIX + ' Switched to conversation: ' + id + ' (' + messages.length + ' messages)');
+  }
+
+  /**
+   * Clear the panel UI (messages, steps, state).
+   */
+  function clearPanelUI() {
     if (messagesContainer) messagesContainer.innerHTML = '';
     if (stepsContainer) stepsContainer.innerHTML = '';
     currentAiBubble = null;
@@ -1823,10 +1924,14 @@ let contextManager = null;        // ContextManager instance (context window man
     if (scrollToBottomBtn) scrollToBottomBtn.style.display = 'none';
     const previewEl = document.getElementById('ds-agent-file-preview');
     if (previewEl) previewEl.innerHTML = '<div class="context-empty">点击左侧文件以预览内容</div>';
-    updateStats();
-    switchContextTab('files');
+updateStats();
+    switchContextTab('conversations');
+  }
 
-    // Click DeepSeek's "new chat" button in the sidebar (SPA navigation, no reload)
+  /**
+   * Click DeepSeek's "new chat" button (SPA navigation, no reload).
+   */
+  function clickDeepSeekNewChat() {
     let clicked = false;
 
     // Strategy 1: search ALL elements (no visibility filter) for "开启新会话" in text or attributes
@@ -2187,6 +2292,88 @@ let contextManager = null;        // ContextManager instance (context window man
     }
   }
 
+  /**
+   * Load and render the conversation list in the sidebar.
+   */
+  async function loadConversationList() {
+    const listEl = document.getElementById('ds-agent-conversation-list');
+    if (!listEl) return;
+
+    // 先显示加载中，让用户知道函数已被调用
+    listEl.innerHTML = '<div class="context-empty">加载中...</div>';
+
+    try {
+      if (!conversationManager) {
+        listEl.innerHTML = '<div class="context-empty">会话管理器未初始化</div>';
+        return;
+      }
+
+      // 从内存缓存读取（零 IPC），先刷新确保最新
+      await conversationManager.refreshListCache();
+      const convs = conversationManager.getListCache();
+      const currentId = conversationManager.getCurrentId();
+
+      // Clear and rebuild
+      listEl.innerHTML = '';
+
+      // New conversation button
+      const newBtn = document.createElement('button');
+      newBtn.className = 'conv-list-new-btn';
+      newBtn.textContent = '+ 新建会话';
+      newBtn.addEventListener('click', () => {
+        newConversation().then(() => loadConversationList());
+      });
+      listEl.appendChild(newBtn);
+
+      if (convs.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'context-empty';
+        empty.textContent = '暂无历史会话';
+        listEl.appendChild(empty);
+        return;
+      }
+
+      for (var i = 0; i < convs.length; i++) {
+        const conv = convs[i];
+        const isActive = conv.id === currentId;
+
+        const item = document.createElement('div');
+        item.className = 'conv-list-item' + (isActive ? ' active' : '');
+        item.innerHTML =
+          '<div class="conv-title">' + escapeHtml(conv.title || '新会话') + '</div>' +
+          '<div class="conv-meta">' +
+            '<span>' + (conv.messageCount || 0) + ' 条消息</span>' +
+            '<span class="conv-delete" title="删除">✕</span>' +
+          '</div>';
+
+        // Click to switch
+        item.addEventListener('click', (e) => {
+          if (e.target.classList.contains('conv-delete')) return;
+          switchConversation(conv.id).then(() => loadConversationList());
+        });
+
+        // Delete button
+        const deleteBtn = item.querySelector('.conv-delete');
+        if (deleteBtn) {
+          deleteBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (!confirm('确定删除会话 "' + (conv.title || '新会话') + '"？')) return;
+            conversationManager.deleteConversation(conv.id).then(() => {
+              loadConversationList();
+            }).catch((err) => {
+              console.error(PREFIX + ' Failed to delete conversation:', err);
+            });
+          });
+        }
+
+        listEl.appendChild(item);
+      }
+    } catch (err) {
+      console.error(PREFIX + ' loadConversationList failed:', err);
+      listEl.innerHTML = '<div class="context-empty">加载失败: ' + escapeHtml(err.message || String(err)) + '</div>';
+    }
+  }
+
   async function previewFile(filePath) {
     previewFilePath = filePath;
     const previewEl = document.getElementById('ds-agent-file-preview');
@@ -2282,6 +2469,8 @@ let contextManager = null;        // ContextManager instance (context window man
     }
     // Refresh stats when switching to stats tab
     if (tab === 'stats') updateStats();
+    // Refresh conversation list when switching to conversations tab
+    if (tab === 'conversations') loadConversationList().catch(err => console.error(PREFIX + ' loadConversationList error:', err));
   }
 
   // ─── Login Detection ────────────────────────────────────────
@@ -2336,10 +2525,13 @@ let contextManager = null;        // ContextManager instance (context window man
     await promptManager.init();
     window.__dsAgentPromptManager = promptManager;
 
-    // Create ContextManager — context window management
-    contextManager = new ContextManager();
-    await contextManager.init();
-    window.__dsAgentContextManager = contextManager;
+// Create ContextManager — context window management
+  contextManager = new ContextManager();
+  await contextManager.init();
+  window.__dsAgentContextManager = contextManager;
+
+  // Expose switchConversation for control panel IPC bridge
+  window.__dsAgentSwitchConversation = switchConversation;
 
     // Register streaming callbacks on DeepSeekClient
     deepseekClient.onThinking(function (delta) {
@@ -2374,6 +2566,9 @@ let contextManager = null;        // ContextManager instance (context window man
 
     // 1. Create UI
     createPanel();
+
+    // 1.1 默认激活会话 tab，加载会话列表
+    loadConversationList().catch(err => console.error(PREFIX + ' init loadConversationList failed:', err));
 
     // 1.5 Wait for DeepSeek login, then auto-show panel
     waitForLogin();

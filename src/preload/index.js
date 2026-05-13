@@ -66,6 +66,20 @@ contextBridge.exposeInMainWorld('dsAgent', {
   saveConversation: (conv) => ipcRenderer.invoke('conversation:save', conv),
   deleteConversation: (id) => ipcRenderer.invoke('conversation:delete', id),
 
+  // Prompt Management (bridge to PromptManager in chat page's main world)
+  getPromptSections: () => ipcRenderer.invoke('prompt:get-sections'),
+  setPromptSection: (name, value) => ipcRenderer.invoke('prompt:set-section', name, value),
+  resetPromptSection: (name) => ipcRenderer.invoke('prompt:reset-section', name),
+  getPromptDefaults: () => ipcRenderer.invoke('prompt:get-defaults'),
+
+  // Context Management (bridge to ContextManager in chat page's main world)
+  getContextConfig: () => ipcRenderer.invoke('context:get-config'),
+  setContextConfig: (key, value) => ipcRenderer.invoke('context:set-config', key, value),
+
+  // Conversation switching (bridge to ConversationManager in chat page's main world)
+  switchConversation: (id) => ipcRenderer.invoke('conversation:switch', id),
+  getCurrentConversationId: () => ipcRenderer.invoke('conversation:get-current-id'),
+
   // Debug: write a log line to ~/.ds-agent/log/ds-agent.log via main process
   debugLog: (line) => ipcRenderer.send('debug:log', line),
 });

@@ -15,7 +15,6 @@
       --ds-accent-green: #a6e3a1; --ds-accent-red: #f38ba8; --ds-accent-maroon: #eba0ac;
       --ds-text-on-accent: #1e1e2e;
     }
-    /* ===== Theme 2: 拿铁白 ===== */
     body[data-theme="latte"] {
       --ds-bg-base: #eff1f5; --ds-bg-mantle: #e6e9ef;
       --ds-bg-surface0: #ccd0da; --ds-bg-surface1: #bcc0cc;
@@ -24,7 +23,6 @@
       --ds-accent-green: #40a02b; --ds-accent-red: #d20f39; --ds-accent-maroon: #e64553;
       --ds-text-on-accent: #ffffff;
     }
-    /* ===== Theme 3: 苹果亮色 ===== */
     body[data-theme="apple-light"] {
       --ds-bg-base: #f5f5f7; --ds-bg-mantle: #e8e8ed;
       --ds-bg-surface0: #e8e8ed; --ds-bg-surface1: #d2d2d7;
@@ -33,7 +31,6 @@
       --ds-accent-green: #34c759; --ds-accent-red: #ff3b30; --ds-accent-maroon: #ff2d55;
       --ds-text-on-accent: #ffffff;
     }
-    /* ===== Theme 4: 苹果暗色 ===== */
     body[data-theme="apple-dark"] {
       --ds-bg-base: #1c1c1e; --ds-bg-mantle: #2c2c2e;
       --ds-bg-surface0: #2c2c2e; --ds-bg-surface1: #3a3a3c;
@@ -42,7 +39,6 @@
       --ds-accent-green: #30d158; --ds-accent-red: #ff453a; --ds-accent-maroon: #ff375f;
       --ds-text-on-accent: #ffffff;
     }
-    /* ===== Theme 5: 极简灰 ===== */
     body[data-theme="slate"] {
       --ds-bg-base: #1e1e24; --ds-bg-mantle: #18181d;
       --ds-bg-surface0: #2a2a32; --ds-bg-surface1: #3a3a44;
@@ -51,7 +47,6 @@
       --ds-accent-green: #6cd4a0; --ds-accent-red: #ff7080; --ds-accent-maroon: #ff90a0;
       --ds-text-on-accent: #ffffff;
     }
-    /* ===== Theme 6: 深海蓝 ===== */
     body[data-theme="ocean"] {
       --ds-bg-base: #1a2332; --ds-bg-mantle: #151d2b;
       --ds-bg-surface0: #243447; --ds-bg-surface1: #2d4058;
@@ -64,16 +59,17 @@
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       background: var(--ds-bg-base); color: var(--ds-text-primary); font-size: 13px;
+      overflow-x: hidden;
     }
 
     /* Tabs */
     .tabs {
       display: flex; border-bottom: 1px solid var(--ds-bg-surface0);
-      background: var(--ds-bg-mantle);
+      background: var(--ds-bg-mantle); overflow-x: auto;
     }
     .tab {
-      padding: 10px 16px; cursor: pointer; color: var(--ds-text-secondary);
-      border-bottom: 2px solid transparent; transition: all 0.2s;
+      padding: 10px 14px; cursor: pointer; color: var(--ds-text-secondary);
+      border-bottom: 2px solid transparent; transition: all 0.2s; white-space: nowrap; font-size: 12px;
     }
     .tab:hover { color: var(--ds-text-primary); }
     .tab.active { color: var(--ds-accent-blue); border-bottom-color: var(--ds-accent-blue); }
@@ -104,15 +100,19 @@
     .tool-item .tool-desc { color: var(--ds-text-secondary); font-size: 12px; margin-top: 2px; }
 
     /* Settings */
-    .setting-group { margin-bottom: 16px; }
+    .setting-group { margin-bottom: 14px; }
     .setting-group label {
       display: block; color: var(--ds-text-secondary); font-size: 12px; margin-bottom: 4px;
     }
-    .setting-group input, .setting-group select {
+    .setting-group input, .setting-group select, .setting-group textarea {
       width: 100%; padding: 8px 10px; background: var(--ds-bg-surface0); color: var(--ds-text-primary);
       border: 1px solid var(--ds-bg-surface1); border-radius: 6px; font-size: 13px;
+      font-family: inherit;
     }
-    .setting-group input:focus, .setting-group select:focus {
+    .setting-group textarea {
+      resize: vertical; min-height: 80px; line-height: 1.5;
+    }
+    .setting-group input:focus, .setting-group select:focus, .setting-group textarea:focus {
       outline: none; border-color: var(--ds-accent-blue);
     }
 
@@ -124,15 +124,18 @@
     .btn-primary:hover { background: var(--ds-accent-sky); }
     .btn-danger { background: var(--ds-accent-red); color: var(--ds-text-on-accent); }
     .btn-danger:hover { background: var(--ds-accent-maroon); }
+    .btn-sm { padding: 4px 10px; font-size: 11px; }
+    .btn-outline {
+      background: transparent; border: 1px solid var(--ds-bg-surface1); color: var(--ds-text-secondary);
+    }
+    .btn-outline:hover { border-color: var(--ds-accent-blue); color: var(--ds-accent-blue); }
 
-    /* Refresh button */
     .refresh-btn {
       float: right; background: none; border: none; color: var(--ds-accent-blue);
       cursor: pointer; font-size: 16px; padding: 4px;
     }
     .refresh-btn:hover { color: var(--ds-accent-sky); }
 
-    /* Toggle switch */
     .toggle {
       position: relative; display: inline-block; width: 40px; height: 22px;
     }
@@ -148,12 +151,49 @@
     }
     .toggle input:checked + .slider { background: var(--ds-accent-blue); }
     .toggle input:checked + .slider:before { transform: translateX(18px); }
+
+    /* Prompt section card */
+    .prompt-section {
+      background: var(--ds-bg-surface0); border-radius: 8px; padding: 12px; margin-bottom: 12px;
+    }
+    .prompt-section .section-header {
+      display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;
+    }
+    .prompt-section .section-name { font-weight: 600; color: var(--ds-accent-blue); font-size: 13px; }
+    .prompt-section .section-actions { display: flex; gap: 6px; }
+    .prompt-section textarea { min-height: 60px; font-size: 12px; }
+
+    /* Conversation list */
+    .conv-list { list-style: none; max-height: 300px; overflow-y: auto; }
+    .conv-item {
+      background: var(--ds-bg-surface0); border-radius: 6px; padding: 10px 12px;
+      margin-bottom: 6px; cursor: pointer; transition: background 0.2s;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .conv-item:hover { background: var(--ds-bg-surface1); }
+    .conv-item.active { border: 1px solid var(--ds-accent-blue); }
+    .conv-item .conv-info { flex: 1; min-width: 0; }
+    .conv-item .conv-title { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .conv-item .conv-meta { color: var(--ds-text-secondary); font-size: 11px; margin-top: 2px; }
+    .conv-item .conv-actions { display: flex; gap: 4px; margin-left: 8px; flex-shrink: 0; }
+
+    .toast {
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+      background: var(--ds-accent-green); color: var(--ds-text-on-accent);
+      padding: 8px 20px; border-radius: 6px; font-size: 13px; z-index: 999;
+      opacity: 0; transition: opacity 0.3s;
+    }
+    .toast.show { opacity: 1; }
+    .toast.error { background: var(--ds-accent-red); }
   </style>
 </head>
 <body data-theme="mocha">
   <div class="tabs">
     <div class="tab active" data-tab="status">状态</div>
     <div class="tab" data-tab="tools">工具</div>
+    <div class="tab" data-tab="conversations">会话</div>
+    <div class="tab" data-tab="prompts">提示词</div>
+    <div class="tab" data-tab="context">上下文</div>
     <div class="tab" data-tab="settings">设置</div>
   </div>
 
@@ -195,6 +235,41 @@
     <ul class="tool-list" id="cp-tool-list">
       <li style="color: var(--ds-text-secondary);">加载中...</li>
     </ul>
+  </div>
+
+  <!-- Conversations Tab -->
+  <div class="tab-content" id="tab-conversations">
+    <div style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+      <span>历史会话</span>
+      <button class="refresh-btn" id="cp-refresh-convs" title="刷新">🔄</button>
+    </div>
+    <ul class="conv-list" id="cp-conv-list">
+      <li style="color: var(--ds-text-secondary);">加载中...</li>
+    </ul>
+  </div>
+
+  <!-- Prompts Tab -->
+  <div class="tab-content" id="tab-prompts">
+    <div style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+      <span>提示词段落</span>
+      <button class="btn btn-sm btn-outline" id="cp-reset-all-prompts">重置全部</button>
+    </div>
+    <div id="cp-prompt-sections">
+      <div style="color: var(--ds-text-secondary);">加载中...</div>
+    </div>
+  </div>
+
+  <!-- Context Tab -->
+  <div class="tab-content" id="tab-context">
+    <div style="margin-bottom: 10px;">
+      <span>上下文窗口配置</span>
+    </div>
+    <div id="cp-context-config">
+      <div style="color: var(--ds-text-secondary);">加载中...</div>
+    </div>
+    <div style="margin-top: 16px; text-align: center;">
+      <button class="btn btn-primary" id="cp-save-context">💾 保存上下文配置</button>
+    </div>
   </div>
 
   <!-- Settings Tab -->
@@ -240,14 +315,19 @@
     </div>
   </div>
 
-  <script>
-    // Wait for dsAgent API to be available (contextBridge may not be ready immediately)
-    function getDsAgent() {
-      return window.dsAgent || null;
-    }
+  <div class="toast" id="cp-toast"></div>
 
-    // Theme management
+  <script>
     var THEME_LIST = ['mocha','latte','apple-light','apple-dark','slate','ocean'];
+    var PROMPT_LABELS = {
+      persona: 'AI 角色',
+      tool_format: '工具调用格式',
+      behavior_rules: '行为规范',
+      special_instructions: '特殊说明'
+    };
+
+    function getDsAgent() { return window.dsAgent || null; }
+
     function applyTheme(theme) {
       document.body.setAttribute('data-theme', theme);
       var sel = document.getElementById('cp-theme-select');
@@ -257,207 +337,403 @@
     function onThemeChange() {
       var theme = document.getElementById('cp-theme-select').value;
       applyTheme(theme);
-      var dsAgent = getDsAgent();
-      if (dsAgent) {
-        dsAgent.setConfig('theme', theme).catch(function() {});
-      }
+      var a = getDsAgent();
+      if (a) a.setConfig('theme', theme).catch(function(){});
+    }
+
+    function showToast(msg, isError) {
+      var t = document.getElementById('cp-toast');
+      t.textContent = msg;
+      t.className = 'toast' + (isError ? ' error' : '') + ' show';
+      setTimeout(function(){ t.className = 'toast'; }, 2000);
+    }
+
+    function escapeHtml(text) {
+      var div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function formatTime(ts) {
+      var d = new Date(ts);
+      var now = new Date();
+      var diff = now - d;
+      if (diff < 60000) return '刚刚';
+      if (diff < 3600000) return Math.floor(diff/60000) + ' 分钟前';
+      if (diff < 86400000) return Math.floor(diff/3600000) + ' 小时前';
+      return d.toLocaleDateString('zh-CN');
     }
 
     // Tab switching
-    document.querySelectorAll('.tab').forEach(tab => {
-      tab.addEventListener('click', () => {
-        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+        document.querySelectorAll('.tab-content').forEach(function(c) { c.classList.remove('active'); });
         tab.classList.add('active');
         document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+
+        // Lazy load
+        if (tab.dataset.tab === 'conversations') refreshConversations();
+        if (tab.dataset.tab === 'prompts') refreshPrompts();
+        if (tab.dataset.tab === 'context') refreshContextConfig();
       });
     });
 
-    // Refresh status
+    // ─── Status ──────────────────────────────────────────────
+
     async function refreshStatus() {
-      const dsAgent = getDsAgent();
-      if (!dsAgent) {
+      var a = getDsAgent();
+      if (!a) {
         document.getElementById('cp-conn').textContent = '❌ API 不可用';
         document.getElementById('cp-conn').className = 'value err';
         return;
       }
-
       try {
-        const health = await dsAgent.health();
+        var health = await a.health();
         document.getElementById('cp-conn').textContent = health.success ? '✅ 已就绪' : '❌ 未就绪';
         document.getElementById('cp-conn').className = 'value ' + (health.success ? 'ok' : 'err');
         document.getElementById('cp-tools').textContent = health.tools != null ? health.tools : 0;
-      } catch (err) {
-        console.error('[Control Panel] refreshStatus error:', err);
+      } catch(e) {
         document.getElementById('cp-conn').textContent = '❌ 未就绪';
         document.getElementById('cp-conn').className = 'value err';
       }
-
       try {
-        const site = await dsAgent.detectSite();
-        document.getElementById('cp-site').textContent = site === 'deepseek' ? 'DeepSeek' : site === 'chatgpt' ? 'ChatGPT' : site;
-      } catch {
-        document.getElementById('cp-site').textContent = '-';
-      }
-
+        var site = await a.detectSite();
+        document.getElementById('cp-site').textContent = site === 'deepseek' ? 'DeepSeek' : site;
+      } catch(e) { document.getElementById('cp-site').textContent = '-'; }
       try {
-        const workspace = await dsAgent.getWorkspace();
-        document.getElementById('cp-workspace-status').textContent = workspace || '-';
-      } catch {
-        document.getElementById('cp-workspace-status').textContent = '-';
-      }
+        var ws = await a.getWorkspace();
+        document.getElementById('cp-workspace-status').textContent = ws || '-';
+      } catch(e) { document.getElementById('cp-workspace-status').textContent = '-'; }
     }
 
-    // Refresh tools
-    async function refreshTools() {
-      const dsAgent = getDsAgent();
-      if (!dsAgent) {
-        document.getElementById('cp-tool-list').innerHTML = '<li style="color: var(--ds-accent-red);">API 不可用</li>';
-        return;
-      }
+    // ─── Tools ───────────────────────────────────────────────
 
+    async function refreshTools() {
+      var a = getDsAgent();
+      if (!a) { document.getElementById('cp-tool-list').innerHTML = '<li style="color: var(--ds-accent-red);">API 不可用</li>'; return; }
       try {
-        const result = await dsAgent.listTools();
-        const list = document.getElementById('cp-tool-list');
+        var result = await a.listTools();
+        var list = document.getElementById('cp-tool-list');
         if (result.success && result.data && result.data.length > 0) {
-          list.innerHTML = result.data.map(t =>
-            '<li class="tool-item">' +
-              '<div class="tool-name">' + escapeHtml(t.name) + '</div>' +
-              '<div class="tool-desc">' + escapeHtml(t.description || '') + '</div>' +
-            '</li>'
-          ).join('');
+          list.innerHTML = result.data.map(function(t) {
+            return '<li class="tool-item"><div class="tool-name">' + escapeHtml(t.name) + '</div><div class="tool-desc">' + escapeHtml(t.description || '') + '</div></li>';
+          }).join('');
         } else if (result.success && result.data && result.data.length === 0) {
           list.innerHTML = '<li style="color: var(--ds-text-secondary);">无可用工具</li>';
         } else {
           list.innerHTML = '<li style="color: var(--ds-accent-red);">加载失败: ' + escapeHtml(result.error || '未知错误') + '</li>';
         }
-      } catch (err) {
-        console.error('[Control Panel] refreshTools error:', err);
-        document.getElementById('cp-tool-list').innerHTML = '<li style="color: var(--ds-accent-red);">加载失败: ' + escapeHtml(err.message || '') + '</li>';
+      } catch(e) {
+        document.getElementById('cp-tool-list').innerHTML = '<li style="color: var(--ds-accent-red);">加载失败: ' + escapeHtml(e.message || '') + '</li>';
       }
     }
 
-    // Select folder button
-    document.getElementById('cp-select-folder').addEventListener('click', async () => {
-      const dsAgent = getDsAgent();
-      if (!dsAgent) {
-        alert('API 不可用');
-        return;
-      }
+    // ─── Conversations ───────────────────────────────────────
+
+    async function refreshConversations() {
+      var a = getDsAgent();
+      var list = document.getElementById('cp-conv-list');
+      if (!a) { list.innerHTML = '<li style="color: var(--ds-accent-red);">API 不可用</li>'; return; }
       try {
-        const result = await dsAgent.selectFolder();
+        var convs = await a.listConversations();
+        var currentId = null;
+        try { currentId = await a.getCurrentConversationId(); } catch(e) {}
+
+        if (!convs || !convs.length) {
+          list.innerHTML = '<li style="color: var(--ds-text-secondary);">暂无历史会话</li>';
+          return;
+        }
+
+        // Sort by updatedAt desc
+        convs.sort(function(a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0); });
+
+        list.innerHTML = convs.map(function(c) {
+          var isActive = c.id === currentId;
+          var title = escapeHtml(c.title || '新会话');
+          var msgCount = c.messageCount || 0;
+          var time = formatTime(c.updatedAt || c.createdAt);
+          return '<li class="conv-item' + (isActive ? ' active' : '') + '" data-id="' + c.id + '">' +
+            '<div class="conv-info">' +
+              '<div class="conv-title">' + (isActive ? '● ' : '') + title + '</div>' +
+              '<div class="conv-meta">' + msgCount + ' 条消息 · ' + time + '</div>' +
+            '</div>' +
+            '<div class="conv-actions">' +
+              '<button class="btn btn-sm btn-outline conv-switch-btn" data-id="' + c.id + '">切换</button>' +
+              '<button class="btn btn-sm btn-danger conv-delete-btn" data-id="' + c.id + '">✕</button>' +
+            '</div>' +
+          '</li>';
+        }).join('');
+
+        // Bind events
+        list.querySelectorAll('.conv-switch-btn').forEach(function(btn) {
+          btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            switchToConversation(btn.dataset.id);
+          });
+        });
+        list.querySelectorAll('.conv-delete-btn').forEach(function(btn) {
+          btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            deleteConversation(btn.dataset.id);
+          });
+        });
+        list.querySelectorAll('.conv-item').forEach(function(item) {
+          item.addEventListener('click', function() {
+            switchToConversation(item.dataset.id);
+          });
+        });
+      } catch(e) {
+        list.innerHTML = '<li style="color: var(--ds-accent-red);">加载失败: ' + escapeHtml(e.message || '') + '</li>';
+      }
+    }
+
+    async function switchToConversation(id) {
+      var a = getDsAgent();
+      if (!a) return;
+      try {
+        await a.switchConversation(id);
+        showToast('已切换到会话');
+        refreshConversations();
+      } catch(e) {
+        showToast('切换失败: ' + (e.message || ''), true);
+      }
+    }
+
+    async function deleteConversation(id) {
+      if (!confirm('确定删除此会话？')) return;
+      var a = getDsAgent();
+      if (!a) return;
+      try {
+        await a.deleteConversation(id);
+        showToast('会话已删除');
+        refreshConversations();
+      } catch(e) {
+        showToast('删除失败: ' + (e.message || ''), true);
+      }
+    }
+
+    // ─── Prompts ─────────────────────────────────────────────
+
+    async function refreshPrompts() {
+      var a = getDsAgent();
+      var container = document.getElementById('cp-prompt-sections');
+      if (!a) { container.innerHTML = '<div style="color: var(--ds-accent-red);">API 不可用</div>'; return; }
+
+      try {
+        var sections = await a.getPromptSections();
+        var defaults = await a.getPromptDefaults();
+        var names = Object.keys(PROMPT_LABELS);
+
+        container.innerHTML = names.map(function(name) {
+          var label = PROMPT_LABELS[name] || name;
+          var value = (sections && sections[name]) ? sections[name] : '';
+          var isDefault = defaults && value === defaults[name];
+          return '<div class="prompt-section">' +
+            '<div class="section-header">' +
+              '<span class="section-name">' + label + (isDefault ? '' : ' <span style="color:var(--ds-accent-green);font-size:11px;">(已自定义)</span>') + '</span>' +
+              '<div class="section-actions">' +
+                '<button class="btn btn-sm btn-outline prompt-reset-btn" data-name="' + name + '">重置</button>' +
+                '<button class="btn btn-sm btn-primary prompt-save-btn" data-name="' + name + '">保存</button>' +
+              '</div>' +
+            '</div>' +
+            '<textarea id="prompt-' + name + '" placeholder="' + escapeHtml(label) + '">' + escapeHtml(value) + '</textarea>' +
+          '</div>';
+        }).join('');
+
+        // Bind save buttons
+        container.querySelectorAll('.prompt-save-btn').forEach(function(btn) {
+          btn.addEventListener('click', function() {
+            var name = btn.dataset.name;
+            var value = document.getElementById('prompt-' + name).value;
+            savePromptSection(name, value);
+          });
+        });
+
+        // Bind reset buttons
+        container.querySelectorAll('.prompt-reset-btn').forEach(function(btn) {
+          btn.addEventListener('click', function() {
+            resetPromptSection(btn.dataset.name);
+          });
+        });
+      } catch(e) {
+        container.innerHTML = '<div style="color: var(--ds-accent-red);">加载失败: ' + escapeHtml(e.message || '') + '</div>';
+      }
+    }
+
+    async function savePromptSection(name, value) {
+      var a = getDsAgent();
+      if (!a) return;
+      try {
+        await a.setPromptSection(name, value);
+        showToast(PROMPT_LABELS[name] + ' 已保存');
+        refreshPrompts();
+      } catch(e) {
+        showToast('保存失败: ' + (e.message || ''), true);
+      }
+    }
+
+    async function resetPromptSection(name) {
+      var a = getDsAgent();
+      if (!a) return;
+      try {
+        await a.resetPromptSection(name);
+        showToast((PROMPT_LABELS[name] || name) + ' 已重置');
+        refreshPrompts();
+      } catch(e) {
+        showToast('重置失败: ' + (e.message || ''), true);
+      }
+    }
+
+    document.getElementById('cp-reset-all-prompts').addEventListener('click', async function() {
+      if (!confirm('确定重置所有提示词段落为默认值？')) return;
+      var a = getDsAgent();
+      if (!a) return;
+      try {
+        await a.resetPromptSection(null);
+        showToast('全部提示词已重置');
+        refreshPrompts();
+      } catch(e) {
+        showToast('重置失败: ' + (e.message || ''), true);
+      }
+    });
+
+    // ─── Context Config ──────────────────────────────────────
+
+    var CONTEXT_LABELS = {
+      maxTokens: 'Token 预算',
+      minRecentExchanges: '最少保留轮数',
+      maxToolResultLength: '工具结果截断阈值（字符）',
+      charsPerToken: '字符/Token 比例',
+      keepFirstUserMessage: '保留原始任务'
+    };
+
+    async function refreshContextConfig() {
+      var a = getDsAgent();
+      var container = document.getElementById('cp-context-config');
+      if (!a) { container.innerHTML = '<div style="color: var(--ds-accent-red);">API 不可用</div>'; return; }
+
+      try {
+        var config = await a.getContextConfig();
+        var keys = Object.keys(CONTEXT_LABELS);
+
+        container.innerHTML = keys.map(function(key) {
+          var label = CONTEXT_LABELS[key] || key;
+          var value = (config && config[key] != null) ? config[key] : '';
+          if (key === 'keepFirstUserMessage') {
+            return '<div class="setting-group" style="display: flex; justify-content: space-between; align-items: center;">' +
+              '<label style="margin-bottom: 0;">' + label + '</label>' +
+              '<label class="toggle"><input type="checkbox" id="ctx-' + key + '"' + (value ? ' checked' : '') + '><span class="slider"></span></label>' +
+            '</div>';
+          }
+          return '<div class="setting-group">' +
+            '<label>' + label + '</label>' +
+            '<input type="number" id="ctx-' + key + '" value="' + value + '" />' +
+          '</div>';
+        }).join('');
+      } catch(e) {
+        container.innerHTML = '<div style="color: var(--ds-accent-red);">加载失败: ' + escapeHtml(e.message || '') + '</div>';
+      }
+    }
+
+    document.getElementById('cp-save-context').addEventListener('click', async function() {
+      var a = getDsAgent();
+      if (!a) return;
+      var keys = Object.keys(CONTEXT_LABELS);
+      try {
+        for (var i = 0; i < keys.length; i++) {
+          var key = keys[i];
+          var el = document.getElementById('ctx-' + key);
+          if (!el) continue;
+          var value;
+          if (key === 'keepFirstUserMessage') {
+            value = el.checked;
+          } else {
+            value = parseInt(el.value);
+            if (isNaN(value)) continue;
+          }
+          await a.setContextConfig(key, value);
+        }
+        showToast('上下文配置已保存');
+        refreshContextConfig();
+      } catch(e) {
+        showToast('保存失败: ' + (e.message || ''), true);
+      }
+    });
+
+    // ─── Settings ────────────────────────────────────────────
+
+    document.getElementById('cp-select-folder').addEventListener('click', async function() {
+      var a = getDsAgent();
+      if (!a) { alert('API 不可用'); return; }
+      try {
+        var result = await a.selectFolder();
         if (result) {
           document.getElementById('cp-workspace').value = result;
           document.getElementById('cp-workspace-status').textContent = result;
         }
-      } catch (err) {
-        alert('选择目录失败: ' + (err.message || '未知错误'));
-      }
+      } catch(e) { alert('选择目录失败: ' + (e.message || '未知错误')); }
     });
 
-    // Save settings
-    document.getElementById('cp-save-settings').addEventListener('click', async () => {
-      const dsAgent = getDsAgent();
-      if (!dsAgent) {
-        alert('API 不可用，无法保存设置');
-        return;
-      }
-
-      const siteSelect = document.getElementById('cp-site-select').value;
-      const maxSteps = document.getElementById('cp-max-steps').value;
-      const confirmTools = document.getElementById('cp-confirm-tools').checked;
-      const theme = document.getElementById('cp-theme-select').value;
-
+    document.getElementById('cp-save-settings').addEventListener('click', async function() {
+      var a = getDsAgent();
+      if (!a) { alert('API 不可用，无法保存设置'); return; }
+      var siteSelect = document.getElementById('cp-site-select').value;
+      var maxSteps = document.getElementById('cp-max-steps').value;
+      var confirmTools = document.getElementById('cp-confirm-tools').checked;
+      var theme = document.getElementById('cp-theme-select').value;
       try {
-        await dsAgent.setConfig('max_steps', parseInt(maxSteps));
-        await dsAgent.setConfig('confirm_tools', confirmTools);
-        await dsAgent.setConfig('theme', theme);
-
-        // Navigate to selected site
-        await dsAgent.goto(siteSelect);
-
+        await a.setConfig('max_steps', parseInt(maxSteps));
+        await a.setConfig('confirm_tools', confirmTools);
+        await a.setConfig('theme', theme);
+        await a.goto(siteSelect);
         alert('设置已保存');
-      } catch (err) {
-        console.error('[Control Panel] save settings error:', err);
-        alert('保存设置失败: ' + (err.message || '未知错误'));
-      }
+      } catch(e) { alert('保存设置失败: ' + (e.message || '未知错误')); }
     });
 
-    // HTML escape helper
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
-    }
+    // ─── Event Listeners ─────────────────────────────────────
 
-    // Event listeners
     document.getElementById('cp-refresh').addEventListener('click', refreshStatus);
     document.getElementById('cp-refresh-tools').addEventListener('click', refreshTools);
+    document.getElementById('cp-refresh-convs').addEventListener('click', refreshConversations);
     document.getElementById('cp-theme-select').addEventListener('change', onThemeChange);
 
-    // Initial load — wait for dsAgent to be ready
+    // ─── Init ─────────────────────────────────────────────────
+
     async function initPanel() {
-      const dsAgent = getDsAgent();
-      if (dsAgent) {
+      var a = getDsAgent();
+      if (a) {
         try {
-          // Load workspace
-          const workspace = await dsAgent.getWorkspace();
-          if (workspace) {
-            document.getElementById('cp-workspace').value = workspace;
-          }
-
-          // Load saved settings
-          const savedSteps = await dsAgent.getConfig('max_steps');
-          if (savedSteps != null) {
-            document.getElementById('cp-max-steps').value = savedSteps;
-          }
-          const savedConfirm = await dsAgent.getConfig('confirm_tools');
-          if (savedConfirm != null) {
-            document.getElementById('cp-confirm-tools').checked = savedConfirm;
-          }
-
-          // Load theme
-          var savedTheme = await dsAgent.getConfig('theme');
+          var workspace = await a.getWorkspace();
+          if (workspace) document.getElementById('cp-workspace').value = workspace;
+          var savedSteps = await a.getConfig('max_steps');
+          if (savedSteps != null) document.getElementById('cp-max-steps').value = savedSteps;
+          var savedConfirm = await a.getConfig('confirm_tools');
+          if (savedConfirm != null) document.getElementById('cp-confirm-tools').checked = savedConfirm;
+          var savedTheme = await a.getConfig('theme');
           if (savedTheme === 'dark') savedTheme = 'mocha';
           if (savedTheme === 'light') savedTheme = 'latte';
-          if (savedTheme && THEME_LIST.indexOf(savedTheme) !== -1) {
-            applyTheme(savedTheme);
-          } else {
-            applyTheme('mocha');
-          }
-        } catch (err) {
-          console.error('[Control Panel] load settings error:', err);
-        }
-
+          if (savedTheme && THEME_LIST.indexOf(savedTheme) !== -1) applyTheme(savedTheme);
+          else applyTheme('mocha');
+        } catch(e) { console.error('[Control Panel] load settings error:', e); }
         refreshStatus();
         refreshTools();
       } else {
-        // Retry a few times — contextBridge should be very fast but just in case
-        let retries = 0;
-        const retryInterval = setInterval(() => {
+        var retries = 0;
+        var retryInterval = setInterval(function() {
           retries++;
-          const agent = getDsAgent();
+          var agent = getDsAgent();
           if (agent) {
             clearInterval(retryInterval);
-            // Load workspace and settings
-            agent.getWorkspace().then(ws => {
-              if (ws) {
-                document.getElementById('cp-workspace').value = ws;
-                document.getElementById('cp-workspace-status').textContent = ws;
-              }
-            }).catch(() => {});
-            agent.getConfig('max_steps').then(v => {
-              if (v != null) document.getElementById('cp-max-steps').value = v;
-            }).catch(() => {});
-            agent.getConfig('confirm_tools').then(v => {
-              if (v != null) document.getElementById('cp-confirm-tools').checked = v;
-            }).catch(() => {});
-            agent.getConfig('theme').then(v => {
+            agent.getWorkspace().then(function(ws) { if (ws) { document.getElementById('cp-workspace').value = ws; document.getElementById('cp-workspace-status').textContent = ws; } }).catch(function(){});
+            agent.getConfig('max_steps').then(function(v) { if (v != null) document.getElementById('cp-max-steps').value = v; }).catch(function(){});
+            agent.getConfig('confirm_tools').then(function(v) { if (v != null) document.getElementById('cp-confirm-tools').checked = v; }).catch(function(){});
+            agent.getConfig('theme').then(function(v) {
               if (v === 'dark') v = 'mocha';
               if (v === 'light') v = 'latte';
               if (v && THEME_LIST.indexOf(v) !== -1) applyTheme(v);
               else applyTheme('mocha');
-            }).catch(() => {});
+            }).catch(function(){});
             refreshStatus();
             refreshTools();
           } else if (retries > 20) {

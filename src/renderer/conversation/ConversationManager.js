@@ -2,16 +2,21 @@
  * ConversationManager — 会话状态管理 & 本地持久化
  *
  * Injected into the MAIN WORLD by preload.
- * Manages conversation messages locally and persists via IPC to main process.
  *
- * Data model:
- *   Conversation {
- *     id: string,
- *     title: string,
- *     messages: [{ role: "system"|"user"|"assistant"|"tool", content: string, timestamp: number }],
- *     createdAt: number,
- *     updatedAt: number
- *   }
+ * 架构：
+ *   内存层（本文件）         磁盘层（JsonStore，通过 IPC）
+ *   ┌──────────────────┐    ┌──────────────────────────────┐
+ *   │ _currentId        │    │ index.json  ← 全部会话摘要   │
+ *   │ _messages[]       │    │ {id}.json   ← 完整会话数据   │
+ *   │ _title            │    └──────────────────────────────┘
+ *   │ _listCache[]      │
+ *   │ _dirty            │
+ *   └──────────────────┘
+ *
+ * 原则：
+ *   - 磁盘是真相源，内存是工作区
+ *   - 所有状态变更前先 await 保存当前会话
+ *   - 侧边栏读 _listCache（零 IPC），切换/新建/删除后刷新
  */
 
 (function () {
@@ -28,10 +33,7 @@
     try {
       if (window.dsAgent && window.dsAgent.debugLog) {
         window.dsAgent.debugLog(JSON.stringify({
-          t: Date.now(),
-          tag: 'ConvMgr',
-          level: level,
-          msg: msg
+          t: Date.now(), tag: 'ConvMgr', level: level, msg: msg
         }));
       }
     } catch (e) { /* dsAgent not ready yet */ }
@@ -43,10 +45,7 @@
     try {
       if (window.dsAgent && window.dsAgent.debugLog) {
         window.dsAgent.debugLog(JSON.stringify({
-          t: Date.now(),
-          tag: 'ConvMgr',
-          level: 'ERROR',
-          msg: msg,
+          t: Date.now(), tag: 'ConvMgr', level: 'ERROR', msg: msg,
           error: err ? (err.message || String(err)) : undefined
         }));
       }
@@ -55,38 +54,71 @@
 
   // ─── Constructor ────────────────────────────────────────────
 
-  /**
-   * @constructor
-   */
   function ConversationManager() {
+    /** @type {string|null} 当前活跃会话 ID */
     this._currentId = null;
+    /** @type {Array<{role, content, timestamp}>} 当前会话消息 */
     this._messages = [];
+    /** @type {string} 当前会话标题 */
     this._title = '';
+    /** @type {number} 当前会话创建时间 */
     this._createdAt = 0;
+    /** @type {boolean} 当前会话是否有未保存变更 */
     this._dirty = false;
+    /** @type {number|null} 防抖保存定时器 */
     this._saveTimer = null;
+    /** @type {Array<{id,title,messageCount,createdAt,updatedAt}>} 全部会话摘要缓存 */
+    this._listCache = [];
   }
 
   // ─── Initialization ─────────────────────────────────────────
 
   /**
-   * Initialize the manager. Call once after construction.
+   * 初始化：加载会话列表缓存。
    */
   ConversationManager.prototype.init = async function () {
     _log('INFO', 'ConversationManager initializing...');
-    _log('INFO', 'ConversationManager initialized');
+    await this.refreshListCache();
+    _log('INFO', 'ConversationManager initialized, ' + this._listCache.length + ' conversations in cache');
+  };
+
+  // ─── List Cache ─────────────────────────────────────────────
+
+  /**
+   * 获取缓存的会话列表（零 IPC，直接读内存）。
+   * @returns {Array<{id, title, messageCount, createdAt, updatedAt}>}
+   */
+  ConversationManager.prototype.getListCache = function () {
+    return this._listCache;
+  };
+
+  /**
+   * 从磁盘刷新会话列表缓存。
+   */
+  ConversationManager.prototype.refreshListCache = async function () {
+    try {
+      var result = await window.dsAgent.listConversations();
+      if (result.success) {
+        this._listCache = result.data || [];
+        _log('INFO', 'refreshListCache count=' + this._listCache.length);
+      }
+    } catch (e) {
+      _logError('refreshListCache failed', e);
+    }
   };
 
   // ─── Conversation Lifecycle ─────────────────────────────────
 
   /**
-   * Create a new conversation.
-   * @param {string} [title] - Optional title
-   * @returns {string} The new conversation ID
+   * 创建新会话。先保存当前会话，再创建新的。
+   * @param {string} [title]
+   * @returns {Promise<string>} 新会话 ID
    */
-  ConversationManager.prototype.newConversation = function (title) {
-    this._flushPendingSave();
+  ConversationManager.prototype.newConversation = async function (title) {
+    // 1. 先保存当前会话
+    await this._saveCurrentNow();
 
+    // 2. 创建新会话
     var id = 'conv_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
     this._currentId = id;
     this._messages = [];
@@ -95,19 +127,25 @@
     this._dirty = true;
 
     _log('INFO', 'newConversation id=' + id + ' title="' + this._title + '"');
-    this._scheduleSave();
+
+    // 3. 立即写入磁盘（空会话也入库，确保出现在列表中）
+    await this._saveNow();
+    await this.refreshListCache();
+
     return id;
   };
 
   /**
-   * Load an existing conversation by ID.
+   * 切换到已有会话。先保存当前会话，再从磁盘加载目标会话。
    * @param {string} id
-   * @returns {Promise<boolean>} true if loaded successfully
+   * @returns {Promise<boolean>}
    */
-  ConversationManager.prototype.load = async function (id) {
-    this._flushPendingSave();
-    _log('INFO', 'load start id=' + id);
+  ConversationManager.prototype.switchTo = async function (id) {
+    // 1. 先保存当前会话
+    await this._saveCurrentNow();
 
+    // 2. 从磁盘加载目标会话
+    _log('INFO', 'switchTo start id=' + id);
     try {
       var t0 = Date.now();
       var result = await window.dsAgent.getConversation(id);
@@ -118,19 +156,21 @@
         this._title = conv.title || '';
         this._createdAt = conv.createdAt || Date.now();
         this._dirty = false;
-        var elapsed = Date.now() - t0;
-        _log('INFO', 'load done id=' + id + ' msgs=' + this._messages.length + ' elapsed=' + elapsed + 'ms');
+        _log('INFO', 'switchTo done id=' + id + ' msgs=' + this._messages.length + ' elapsed=' + (Date.now() - t0) + 'ms');
+
+        // 3. 刷新列表缓存
+        await this.refreshListCache();
         return true;
       }
-      _log('WARN', 'load failed id=' + id + ' reason=' + (result.error || 'not found'));
+      _log('WARN', 'switchTo failed id=' + id + ' reason=' + (result.error || 'not found'));
     } catch (e) {
-      _logError('load exception id=' + id, e);
+      _logError('switchTo exception id=' + id, e);
     }
     return false;
   };
 
   /**
-   * Delete a conversation by ID.
+   * 删除会话。
    * @param {string} id
    * @returns {Promise<boolean>}
    */
@@ -139,92 +179,68 @@
     try {
       var result = await window.dsAgent.deleteConversation(id);
       if (result.success) {
+        // 如果删除的是当前会话，重置状态
         if (this._currentId === id) {
           this._currentId = null;
           this._messages = [];
           this._title = '';
           this._dirty = false;
         }
+        await this.refreshListCache();
         _log('INFO', 'deleteConversation done id=' + id);
         return true;
       }
-      _log('WARN', 'deleteConversation failed id=' + id + ' reason=' + (result.error || 'unknown'));
+      _log('WARN', 'deleteConversation failed id=' + id);
     } catch (e) {
       _logError('deleteConversation exception id=' + id, e);
     }
     return false;
   };
 
-  /**
-   * List all saved conversations (summary only, no messages).
-   * @returns {Promise<Array<{id, title, createdAt, updatedAt, messageCount}>>}
-   */
-  ConversationManager.prototype.listConversations = async function () {
-    try {
-      var result = await window.dsAgent.listConversations();
-      if (result.success) {
-        var list = result.data || [];
-        _log('INFO', 'listConversations count=' + list.length);
-        return list;
-      }
-      _log('WARN', 'listConversations failed');
-    } catch (e) {
-      _logError('listConversations exception', e);
-    }
-    return [];
-  };
-
   // ─── Message Management ─────────────────────────────────────
 
   /**
-   * Add a message to the current conversation.
-   * @param {string} role - "user" | "assistant" | "tool" | "system"
-   * @param {string} content
-   * @returns {object} The added message
+   * 向当前会话添加一条消息。
    */
   ConversationManager.prototype.addMessage = function (role, content) {
     if (!this._currentId) {
-      this.newConversation();
+      // 延迟创建：首次 addMessage 时自动创建会话
+      this._currentId = 'conv_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+      this._messages = [];
+      this._title = '新会话';
+      this._createdAt = Date.now();
     }
 
-    var msg = {
-      role: role,
-      content: content,
-      timestamp: Date.now()
-    };
+    var msg = { role: role, content: content, timestamp: Date.now() };
     this._messages.push(msg);
     this._dirty = true;
 
-    // Auto-title: use first user message as title
+    // 自动标题：用第一条用户消息
     if (role === 'user' && this._title === '新会话') {
       this._title = content.substring(0, 50).replace(/\n/g, ' ');
     }
 
-    _log('INFO', 'addMessage role=' + role + ' len=' + content.length + ' totalMsgs=' + this._messages.length + ' convId=' + this._currentId);
+    _log('INFO', 'addMessage role=' + role + ' len=' + content.length + ' totalMsgs=' + this._messages.length);
     this._scheduleSave();
     return msg;
   };
 
   /**
-   * Get all messages in the current conversation.
-   * @returns {Array<{role, content, timestamp}>}
+   * 获取当前会话全部消息（副本）。
    */
   ConversationManager.prototype.getMessages = function () {
     return this._messages.slice();
   };
 
   /**
-   * Get the last N messages.
-   * @param {number} n
-   * @returns {Array<{role, content, timestamp}>}
+   * 获取最后 N 条消息。
    */
   ConversationManager.prototype.getLastMessages = function (n) {
     return this._messages.slice(-n);
   };
 
   /**
-   * Get the total character count of all messages (for token estimation).
-   * @returns {number}
+   * 获取总字符数（用于 token 估算）。
    */
   ConversationManager.prototype.getTotalChars = function () {
     var total = 0;
@@ -235,25 +251,13 @@
   };
 
   /**
-   * Remove the last N messages (for undo / error recovery).
-   * @param {number} n
+   * 移除最后 N 条消息。
    */
   ConversationManager.prototype.removeLastMessages = function (n) {
     if (n <= 0) return;
     this._messages.splice(-n, n);
     this._dirty = true;
     _log('INFO', 'removeLastMessages n=' + n + ' remaining=' + this._messages.length);
-    this._scheduleSave();
-  };
-
-  /**
-   * Clear all messages in the current conversation.
-   */
-  ConversationManager.prototype.clearMessages = function () {
-    var wasCount = this._messages.length;
-    this._messages = [];
-    this._dirty = true;
-    _log('INFO', 'clearMessages was=' + wasCount + ' now=0');
     this._scheduleSave();
   };
 
@@ -274,25 +278,23 @@
   // ─── Persistence ────────────────────────────────────────────
 
   /**
-   * Save the current conversation immediately.
-   * @returns {Promise<void>}
+   * 公开的保存方法：立即保存当前会话到磁盘。
    */
   ConversationManager.prototype.save = async function () {
-    if (!this._currentId) {
-      _log('DEBUG', 'save skipped: no currentId');
-      return;
-    }
-    if (!this._dirty) {
-      _log('DEBUG', 'save skipped: not dirty');
-      return;
-    }
+    await this._saveNow();
+  };
 
-    this._flushPendingSave();
+  /**
+   * 立即保存当前会话到磁盘（内部方法）。
+   */
+  ConversationManager.prototype._saveNow = async function () {
+    if (!this._currentId) return;
+    if (!this._dirty) return;
+
+    this._cancelSaveTimer();
 
     var t0 = Date.now();
-    var msgCount = this._messages.length;
-    var totalChars = this.getTotalChars();
-    _log('INFO', 'save start id=' + this._currentId + ' msgs=' + msgCount + ' chars=' + totalChars);
+    _log('INFO', '_saveNow id=' + this._currentId + ' msgs=' + this._messages.length);
 
     try {
       await window.dsAgent.saveConversation({
@@ -303,30 +305,39 @@
         updatedAt: Date.now()
       });
       this._dirty = false;
-      var elapsed = Date.now() - t0;
-      _log('INFO', 'save done id=' + this._currentId + ' elapsed=' + elapsed + 'ms');
+      _log('INFO', '_saveNow done id=' + this._currentId + ' elapsed=' + (Date.now() - t0) + 'ms');
     } catch (e) {
-      _logError('save failed id=' + this._currentId, e);
+      _logError('_saveNow failed id=' + this._currentId, e);
     }
   };
 
   /**
-   * Schedule a debounced save (500ms after last change).
+   * 保存当前会话（如果 dirty），用于切换/新建前。
+   */
+  ConversationManager.prototype._saveCurrentNow = async function () {
+    if (this._dirty && this._currentId) {
+      await this._saveNow();
+    }
+  };
+
+  /**
+   * 防抖保存（500ms 后自动保存）。
    */
   ConversationManager.prototype._scheduleSave = function () {
     var self = this;
-    if (this._saveTimer) {
-      clearTimeout(this._saveTimer);
-    }
+    this._cancelSaveTimer();
     this._saveTimer = setTimeout(function () {
-      self.save();
+      self._saveTimer = null;
+      self._saveNow().catch(function (e) {
+        _logError('_scheduleSave failed', e);
+      });
     }, 500);
   };
 
   /**
-   * Flush any pending scheduled save immediately.
+   * 取消防抖定时器。
    */
-  ConversationManager.prototype._flushPendingSave = function () {
+  ConversationManager.prototype._cancelSaveTimer = function () {
     if (this._saveTimer) {
       clearTimeout(this._saveTimer);
       this._saveTimer = null;
