@@ -60,7 +60,13 @@ contextBridge.exposeInMainWorld('dsAgent', {
     ipcRenderer.removeAllListeners(channel);
   },
 
-  // Debug: write a log line to ~/ds-agent-debug.log via main process
+  // Conversation Management
+  listConversations: () => ipcRenderer.invoke('conversation:list'),
+  getConversation: (id) => ipcRenderer.invoke('conversation:get', id),
+  saveConversation: (conv) => ipcRenderer.invoke('conversation:save', conv),
+  deleteConversation: (id) => ipcRenderer.invoke('conversation:delete', id),
+
+  // Debug: write a log line to ~/.ds-agent/log/ds-agent.log via main process
   debugLog: (line) => ipcRenderer.send('debug:log', line),
 });
 
@@ -167,6 +173,7 @@ if (isChatPage) {
     '  var _origXHROpen = XMLHttpRequest.prototype.open;\n' +
     '  var _origXHRSend = XMLHttpRequest.prototype.send;\n' +
     '  window.__dsAgentToolHint = "";\n' +
+    '  window.__dsAgentOrigFetch = _origFetch;\n' +
     '\n' +
     '  function modifyRequestBody(bodyStr) {\n' +
     '    if (!bodyStr) return bodyStr;\n' +
@@ -385,7 +392,47 @@ if (isChatPage) {
       console.error('[DS Agent] Failed to inject adapter:', err);
     }
 
-    // 3. Agent script
+    // 3. ConversationManager (new: local conversation state management)
+    try {
+      const convMgrPath = path.join(__dirname, '..', 'renderer', 'conversation', 'ConversationManager.js');
+      const convMgrCode = fs.readFileSync(convMgrPath, 'utf-8');
+      injectScriptToMainWorld(convMgrCode, 'ds-agent-conversation-manager');
+      console.log('[DS Agent] ConversationManager injected');
+    } catch (err) {
+      console.error('[DS Agent] Failed to inject ConversationManager:', err);
+    }
+
+    // 4. DeepSeekClient (new: direct API calls, bypass DOM injection)
+    try {
+      const clientPath = path.join(__dirname, '..', 'renderer', 'api', 'DeepSeekClient.js');
+      const clientCode = fs.readFileSync(clientPath, 'utf-8');
+      injectScriptToMainWorld(clientCode, 'ds-agent-deepseek-client');
+      console.log('[DS Agent] DeepSeekClient injected');
+    } catch (err) {
+      console.error('[DS Agent] Failed to inject DeepSeekClient:', err);
+    }
+
+    // 4.5 PromptManager (new: template-based prompt management)
+    try {
+      const promptMgrPath = path.join(__dirname, '..', 'renderer', 'prompt', 'PromptManager.js');
+      const promptMgrCode = fs.readFileSync(promptMgrPath, 'utf-8');
+      injectScriptToMainWorld(promptMgrCode, 'ds-agent-prompt-manager');
+      console.log('[DS Agent] PromptManager injected');
+    } catch (err) {
+      console.error('[DS Agent] Failed to inject PromptManager:', err);
+    }
+
+    // 4.6 ContextManager (new: agent context window management)
+    try {
+      const ctxMgrPath = path.join(__dirname, '..', 'renderer', 'context', 'ContextManager.js');
+      const ctxMgrCode = fs.readFileSync(ctxMgrPath, 'utf-8');
+      injectScriptToMainWorld(ctxMgrCode, 'ds-agent-context-manager');
+      console.log('[DS Agent] ContextManager injected');
+    } catch (err) {
+      console.error('[DS Agent] Failed to inject ContextManager:', err);
+    }
+
+    // 5. Agent script
     try {
       const agentScriptPath = path.join(__dirname, '..', 'renderer', 'agent.js');
       const agentCode = fs.readFileSync(agentScriptPath, 'utf-8');

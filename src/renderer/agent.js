@@ -50,6 +50,10 @@
   const THEME_NAMES = { mocha:'暗夜紫', latte:'拿铁白', 'apple-light':'苹果亮色', 'apple-dark':'苹果暗色', slate:'极简灰', ocean:'深海蓝' };
   let userScrolledUp = false;       // Whether user has manually scrolled up (pause auto-scroll)
   let scrollToBottomBtn = null;     // "Scroll to bottom" button
+  let conversationManager = null;   // ConversationManager instance (local state + persistence)
+  let deepseekClient = null;        // DeepSeekClient instance (direct API calls)
+let promptManager = null;         // PromptManager instance (template-based prompts)
+let contextManager = null;        // ContextManager instance (context window management)
 
   // ─── UI Elements (populated in createPanel) ──────────────────
   let panel = null;
@@ -1489,15 +1493,27 @@
       placeholder.id = 'ds-agent-placeholder';
     }
 
-    // Send via adapter — handles DOM injection and SSE streaming
-    const adapter = window.__dsAgentAdapter;
-    if (!adapter) {
-      addMessage('tool-error', 'Adapter 未初始化');
+    // Send via DeepSeekClient — direct API call with full conversation context
+    if (!deepseekClient) {
+      addMessage('tool-error', 'DeepSeekClient 未初始化');
       return;
     }
 
     try {
-      const fullResponse = await adapter.sendMessage(text);
+      // Add user message to local conversation
+      conversationManager.addMessage('user', text);
+
+      // Send request with context-managed messages (not all history)
+      const allMessages = conversationManager.getMessages();
+      const systemPrompt = buildToolHint();
+      const ctx = contextManager.buildContext(allMessages, systemPrompt);
+      const fullResponse = await deepseekClient.send(ctx.messages, systemPrompt);
+
+      // Add assistant response to local conversation
+      if (fullResponse) {
+        conversationManager.addMessage('assistant', fullResponse);
+      }
+
       // Response bubbles are updated in real-time by onThinking/onContent callbacks
       // Check for tool calls and start agent loop if needed
       const calls = checkForToolCalls(fullResponse || '');
@@ -1531,41 +1547,8 @@
   }
 
   function buildToolHint() {
-    if (!toolRegistry.length) return '';
-
-    let hint = '[系统指令] 你是一个能操作用户电脑的 AI 助手。你拥有以下 MCP 工具，当用户的需求可以用工具完成时，你必须调用工具。\n\n';
-    hint += '调用格式：用代码块写 ```mcp:工具名``` 后紧跟一个 JSON 代码块写参数。\n\n';
-    hint += '示例：\n```mcp:execute_command\n{"command": "ls -la"}\n```\n\n';
-    hint += '可用工具列表：\n';
-
-    toolRegistry.forEach(t => {
-      hint += `\n### ${t.name}\n${t.description || ''}\n`;
-      const schema = t.inputSchema;
-      if (schema?.properties) {
-        const props = Object.entries(schema.properties);
-        if (props.length) {
-          hint += '参数:\n';
-          props.forEach(([key, val]) => {
-            const required = schema.required?.includes(key) ? ' (必填)' : ' (可选)';
-            hint += `  - ${key}${required}: ${val.description || val.type || ''}\n`;
-          });
-        }
-      }
-    });
-
-    hint += '\n\n## 行为规范';
-    hint += '\n- 如果用户的需求需要多步操作，请逐步调用工具，每次调用一个';
-    hint += '\n- 如果工具返回错误，请分析原因并尝试其他方法';
-    hint += '\n- 执行完所有必要操作后，请给出清晰的总结';
-    hint += '\n- 如果不需要工具就正常回答';
-    hint += '\n\n## 读取大文件';
-    hint += '\n- read_file 默认只读取文件的前 200 行';
-    hint += '\n- 如果返回结果末尾有截断提示，说明文件还有更多行';
-    hint += '\n- 使用 start_line 参数从指定行继续读取，例如 start_line=201 读取下一段';
-    hint += '\n- 可以增大 line_count 参数一次读取更多行，但建议不超过 500 行';
-    hint += '\n- 先用默认参数读取文件开头了解结构，再根据需要分段读取后续部分';
-    hint += '\n\n当收到 <tool_result> 包裹的文本时，这是你之前调用的工具的执行结果。请基于结果继续回答用户的问题，或决定是否需要调用更多工具。';
-    return hint;
+    if (!promptManager) return '';
+    return promptManager.buildPrompt(toolRegistry);
   }
 
   function updateToolHint() {
@@ -1721,13 +1704,30 @@
           combinedResult += '</tool_result>\n\n';
         }
 
-        // ── Send results and wait for AI response via adapter ──
+        // ── Append continuation hint so the model knows what to do next ──
+        // Without this, the model may forget it's in the middle of a task
+        // after many rounds of tool calls, especially when ContextManager
+        // truncates older messages.
+        combinedResult += '以上是工具执行结果。请基于结果继续完成任务，如需更多信息请调用工具，否则给出最终回答。';
+
+        // ── Add tool results to conversation, then send via DeepSeekClient ──
+        conversationManager.addMessage('tool', combinedResult);
+
         var finalResponse;
         try {
-          finalResponse = await window.__dsAgentAdapter.sendMessage(combinedResult);
+          // Send with context-managed messages (not all history)
+          var allMessages = conversationManager.getMessages();
+          var sysPrompt = buildToolHint();
+          var ctx = contextManager.buildContext(allMessages, sysPrompt);
+          finalResponse = await deepseekClient.send(ctx.messages, sysPrompt);
+
+          // Add assistant response to local conversation
+          if (finalResponse) {
+            conversationManager.addMessage('assistant', finalResponse);
+          }
         } catch (err) {
           if (agentAbortController.signal.aborted) break;
-          console.log(PREFIX + ' Adapter sendMessage failed: ' + err.message);
+          console.log(PREFIX + ' DeepSeekClient send failed: ' + err.message);
           addStep('thinking', '❌ 发送失败', err.message);
           if (panelMode === 'half' || panelMode === 'full') {
             addToolStepInline('thinking', '❌ 发送失败', err.message);
@@ -1765,6 +1765,13 @@
       updateStats();
       const stopBtn2 = document.getElementById('ds-agent-stop');
       if (stopBtn2) stopBtn2.style.display = 'none';
+
+      // Save conversation after agent loop completes
+      if (conversationManager) {
+        conversationManager.save().catch(function(e) {
+          console.error(PREFIX + ' Failed to save conversation after agent loop:', e);
+        });
+      }
     }
   }
 
@@ -1773,9 +1780,9 @@
       agentAbortController.abort();
       agentRunning = false;
 
-      // Abort any pending adapter operation
-      if (window.__dsAgentAdapter) {
-        window.__dsAgentAdapter.abort();
+      // Abort any pending DeepSeekClient operation
+      if (deepseekClient) {
+        deepseekClient.abort();
       }
 
       updateStatus('ds-agent-loop-status', '⏹ 已停止');
@@ -1789,6 +1796,12 @@
   async function newConversation() {
     // Stop any running agent loop first
     stopAgentLoop();
+
+    // Save current conversation before creating new one
+    if (conversationManager) {
+      try { await conversationManager.save(); } catch(e) {}
+      conversationManager.newConversation();
+    }
 
     // Clear panel UI
     if (messagesContainer) messagesContainer.innerHTML = '';
@@ -2305,12 +2318,31 @@
   async function init() {
     console.log(`${PREFIX} v${VERSION} initializing...`);
 
-    // Create DeepSeek adapter — unified interface for all chat interactions
-    const adapter = new DeepSeekAdapter();
+    // Create ConversationManager — local conversation state + persistence
+    conversationManager = new ConversationManager();
+    await conversationManager.init();
+    window.__dsAgentConversationManager = conversationManager;
+
+    // Create DeepSeekAdapter — DOM injection + SSE interception bridge
+    var adapter = new DeepSeekAdapter();
     window.__dsAgentAdapter = adapter;
 
-    // Register streaming callbacks on the adapter (replaces old onThinking/onStreamContent)
-    adapter.onThinking(function (delta) {
+    // Create DeepSeekClient — direct API calls (bypass DOM injection)
+    deepseekClient = new DeepSeekClient();
+    window.__dsAgentDeepSeekClient = deepseekClient;
+
+    // Create PromptManager — template-based prompt management
+    promptManager = new PromptManager();
+    await promptManager.init();
+    window.__dsAgentPromptManager = promptManager;
+
+    // Create ContextManager — context window management
+    contextManager = new ContextManager();
+    await contextManager.init();
+    window.__dsAgentContextManager = contextManager;
+
+    // Register streaming callbacks on DeepSeekClient
+    deepseekClient.onThinking(function (delta) {
       if (!messagesContainer) return;
       if (!currentAiBubble) {
         const placeholder = document.getElementById('ds-agent-placeholder');
@@ -2323,7 +2355,7 @@
       addThinkingBubble(delta);
     });
 
-    adapter.onContent(function (delta) {
+    deepseekClient.onContent(function (delta) {
       if (!messagesContainer) return;
       if (lastStreamType === 'thinking' && currentThinkingBubble) {
         finalizeThinkingBubble();
@@ -2332,7 +2364,7 @@
       updateAiBubble(delta);
     });
 
-    console.log(`${PREFIX} Adapter created and callbacks registered`);
+    console.log(`${PREFIX} ConversationManager + DeepSeekClient + PromptManager + ContextManager created and callbacks registered`);
 
     if (document.readyState !== 'complete') {
       await new Promise(resolve => window.addEventListener('load', resolve));
