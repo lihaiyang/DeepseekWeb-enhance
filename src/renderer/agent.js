@@ -139,7 +139,7 @@ let contextManager = null;        // ContextManager instance (context window man
     cpBtn.textContent = '⚙';
     cpBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      window.dsAgent?.openControlPanel();
+      switchContextTab('settings');
     });
     headerActions.appendChild(cpBtn);
 
@@ -238,6 +238,7 @@ let contextManager = null;        // ContextManager instance (context window man
         <button class="ds-context-tab" data-tab="files">📁 文件</button>
         <button class="ds-context-tab" data-tab="preview">📄 预览</button>
         <button class="ds-context-tab" data-tab="stats">📊 统计</button>
+        <button class="ds-context-tab" data-tab="settings">⚙️ 设置</button>
       </div>
       <div id="ds-agent-context-content">
         <div class="ds-context-pane" data-pane="files">
@@ -257,6 +258,30 @@ let contextManager = null;        // ContextManager instance (context window man
         </div>
         <div class="ds-context-pane" data-pane="stats">
           <div id="ds-agent-stats-panel"></div>
+        </div>
+        <div class="ds-context-pane" data-pane="settings">
+          <div id="ds-agent-settings-panel">
+            <div id="ds-settings-subtabs">
+              <button class="ds-settings-subtab active" data-subtab="status">状态</button>
+              <button class="ds-settings-subtab" data-subtab="prompts">提示词</button>
+              <button class="ds-settings-subtab" data-subtab="context">上下文</button>
+              <button class="ds-settings-subtab" data-subtab="config">设置</button>
+            </div>
+            <div id="ds-settings-subpanes">
+              <div class="ds-settings-subpane active" data-subpane="status">
+                <div id="ds-settings-status"><div class="context-empty">加载中...</div></div>
+              </div>
+              <div class="ds-settings-subpane" data-subpane="prompts">
+                <div id="ds-settings-prompts"><div class="context-empty">加载中...</div></div>
+              </div>
+              <div class="ds-settings-subpane" data-subpane="context">
+                <div id="ds-settings-context"><div class="context-empty">加载中...</div></div>
+              </div>
+              <div class="ds-settings-subpane" data-subpane="config">
+                <div id="ds-settings-config"><div class="context-empty">加载中...</div></div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     `;
@@ -972,6 +997,138 @@ let contextManager = null;        // ContextManager instance (context window man
       .stats-row:last-child { border-bottom: none; }
       .stats-row .stats-row-label { color: var(--ds-text-muted); }
       .stats-row .stats-row-value { color: var(--ds-text-primary); font-weight: 600; }
+
+      /* ===== Settings Panel ===== */
+      #ds-agent-settings-panel {
+        display: flex; flex-direction: column; height: 100%;
+      }
+      #ds-settings-subtabs {
+        display: flex; flex-shrink: 0;
+        border-bottom: 1px solid var(--ds-bg-surface0);
+        background: var(--ds-bg-base);
+      }
+      .ds-settings-subtab {
+        flex: 1; padding: 7px 4px; background: none; border: none;
+        color: var(--ds-text-muted); cursor: pointer; font-size: 11px;
+        font-family: inherit; transition: all 0.15s;
+        border-bottom: 2px solid transparent;
+      }
+      .ds-settings-subtab:hover { color: var(--ds-text-primary); }
+      .ds-settings-subtab.active {
+        color: var(--ds-accent-blue); border-bottom-color: var(--ds-accent-blue);
+      }
+      #ds-settings-subpanes {
+        flex: 1; overflow: hidden; position: relative;
+      }
+      .ds-settings-subpane {
+        display: none; position: absolute; inset: 0;
+        overflow-y: auto; padding: 10px 12px;
+      }
+      .ds-settings-subpane.active { display: block; }
+
+      /* Settings: status cards */
+      .ds-settings-status-grid {
+        display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+      }
+      .ds-settings-status-card {
+        background: var(--ds-bg-surface0); border-radius: 8px; padding: 10px 12px;
+      }
+      .ds-settings-status-card .slabel {
+        color: var(--ds-text-muted); font-size: 10px; margin-bottom: 3px;
+      }
+      .ds-settings-status-card .svalue {
+        font-size: 16px; font-weight: 600; color: var(--ds-text-primary);
+      }
+      .ds-settings-status-card .svalue.ok { color: var(--ds-accent-green); }
+      .ds-settings-status-card .svalue.err { color: var(--ds-accent-red); }
+
+      /* Settings: prompt section cards */
+      .ds-prompt-card {
+        background: var(--ds-bg-surface0); border-radius: 8px; margin-bottom: 10px;
+        overflow: hidden; border: 1px solid var(--ds-bg-surface1);
+        transition: border-color 0.2s;
+      }
+      .ds-prompt-card:focus-within {
+        border-color: var(--ds-accent-blue); box-shadow: 0 0 0 2px rgba(137,180,250,0.12);
+      }
+      .ds-prompt-card .pcard-header {
+        display: flex; justify-content: space-between; align-items: center;
+        padding: 8px 10px; background: var(--ds-bg-mantle);
+        border-bottom: 1px solid var(--ds-bg-surface1);
+      }
+      .ds-prompt-card .pcard-header-left { display: flex; align-items: center; gap: 6px; min-width: 0; }
+      .ds-prompt-card .pcard-icon {
+        width: 22px; height: 22px; border-radius: 5px; display: flex;
+        align-items: center; justify-content: center; font-size: 12px;
+        background: var(--ds-bg-surface1); flex-shrink: 0;
+      }
+      .ds-prompt-card .pcard-name {
+        font-weight: 600; font-size: 12px; color: var(--ds-text-primary);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .ds-prompt-card .pcard-actions { display: flex; gap: 4px; flex-shrink: 0; }
+      .ds-prompt-card .pcard-body { padding: 8px 10px; }
+      .ds-prompt-card textarea {
+        width: 100%; min-height: 80px; padding: 8px 10px;
+        background: var(--ds-bg-base); color: var(--ds-text-primary);
+        border: 1px solid var(--ds-bg-surface1); border-radius: 5px;
+        font-size: 11px; line-height: 1.5; font-family: 'SF Mono', 'Fira Code', monospace;
+        resize: vertical;
+      }
+      .ds-prompt-card textarea:focus { outline: none; border-color: var(--ds-accent-blue); }
+      .ds-prompt-card .pcard-footer {
+        display: flex; justify-content: space-between; align-items: center;
+        padding: 0 10px 8px 10px;
+      }
+      .ds-prompt-card .pcard-chars {
+        color: var(--ds-text-muted); font-size: 10px;
+      }
+      .ds-prompt-card .pcard-chars.warn { color: var(--ds-accent-red); }
+      .ds-prompt-card .pcard-badge {
+        font-size: 9px; padding: 1px 6px; border-radius: 8px; font-weight: 500;
+        background: var(--ds-accent-green); color: var(--ds-text-on-accent);
+      }
+      .ds-prompt-card .pcard-badge.default {
+        background: var(--ds-bg-surface1); color: var(--ds-text-muted);
+      }
+
+      /* Settings: icon buttons */
+      .ds-settings-icon-btn {
+        width: 26px; height: 26px; border-radius: 5px; border: 1px solid var(--ds-bg-surface1);
+        background: var(--ds-bg-surface0); color: var(--ds-text-muted); cursor: pointer;
+        font-size: 12px; display: flex; align-items: center; justify-content: center;
+        transition: all 0.15s;
+      }
+      .ds-settings-icon-btn:hover { background: var(--ds-bg-surface1); color: var(--ds-text-primary); }
+      .ds-settings-icon-btn.save:hover { background: var(--ds-accent-blue); color: #fff; border-color: var(--ds-accent-blue); }
+      .ds-settings-icon-btn.reset:hover { background: var(--ds-accent-red); color: #fff; border-color: var(--ds-accent-red); }
+
+      /* Settings: form groups */
+      .ds-settings-group { margin-bottom: 12px; }
+      .ds-settings-group label {
+        display: block; color: var(--ds-text-muted); font-size: 11px; margin-bottom: 3px;
+      }
+      .ds-settings-group input, .ds-settings-group select {
+        width: 100%; padding: 7px 9px; background: var(--ds-bg-surface0); color: var(--ds-text-primary);
+        border: 1px solid var(--ds-bg-surface1); border-radius: 5px; font-size: 12px;
+        font-family: inherit;
+      }
+      .ds-settings-group input:focus, .ds-settings-group select:focus {
+        outline: none; border-color: var(--ds-accent-blue);
+      }
+      .ds-settings-btn {
+        padding: 7px 14px; border: none; border-radius: 5px; cursor: pointer;
+        font-size: 12px; font-weight: 500; font-family: inherit; transition: all 0.15s;
+      }
+      .ds-settings-btn.primary { background: var(--ds-accent-blue); color: var(--ds-text-on-accent); }
+      .ds-settings-btn.primary:hover { background: var(--ds-accent-sky); }
+      .ds-settings-btn.outline {
+        background: transparent; border: 1px solid var(--ds-bg-surface1); color: var(--ds-text-muted);
+      }
+      .ds-settings-btn.outline:hover { border-color: var(--ds-accent-blue); color: var(--ds-accent-blue); }
+      .ds-settings-btn.danger { background: var(--ds-accent-red); color: #fff; }
+      .ds-settings-btn.danger:hover { background: var(--ds-accent-maroon); }
+      .ds-settings-btn.sm { padding: 4px 8px; font-size: 10px; }
 
       /* ===== FAB ===== */
       #ds-agent-fab {
@@ -2453,25 +2610,267 @@ updateStats();
     `;
   }
 
-  function switchContextTab(tab) {
-    contextTab = tab;
-    const tabs = contextPanel?.querySelectorAll('.ds-context-tab');
-    const panes = contextPanel?.querySelectorAll('.ds-context-pane');
-    if (tabs) {
-      tabs.forEach(t => {
-        t.classList.toggle('active', t.dataset.tab === tab);
-      });
-    }
-    if (panes) {
-      panes.forEach(p => {
-        p.classList.toggle('active', p.dataset.pane === tab);
-      });
-    }
-    // Refresh stats when switching to stats tab
-    if (tab === 'stats') updateStats();
-    // Refresh conversation list when switching to conversations tab
-    if (tab === 'conversations') loadConversationList().catch(err => console.error(PREFIX + ' loadConversationList error:', err));
+  // ─── Settings Panel ─────────────────────────────────────────
+
+  const SETTINGS_PROMPT_LABELS = {
+    persona: 'AI 角色',
+    tool_format: '工具调用格式',
+    behavior_rules: '行为规范',
+    special_instructions: '特殊说明'
+  };
+  const SETTINGS_PROMPT_ICONS = {
+    persona: '🤖', tool_format: '🔧', behavior_rules: '📋', special_instructions: '💡'
+  };
+
+  function switchSettingsSubtab(subtab) {
+    const subtabs = document.querySelectorAll('.ds-settings-subtab');
+    const subpanes = document.querySelectorAll('.ds-settings-subpane');
+    subtabs.forEach(t => t.classList.toggle('active', t.dataset.subtab === subtab));
+    subpanes.forEach(p => p.classList.toggle('active', p.dataset.subpane === subtab));
+    if (subtab === 'status') refreshSettingsStatus();
+    if (subtab === 'prompts') refreshSettingsPrompts();
+    if (subtab === 'context') refreshSettingsContext();
+    if (subtab === 'config') refreshSettingsConfig();
   }
+
+  async function refreshSettingsStatus() {
+    const el = document.getElementById('ds-settings-status');
+    if (!el) return;
+    try {
+      const health = window.dsAgent ? await window.dsAgent.health() : null;
+      const tools = window.dsAgent ? await window.dsAgent.listTools() : null;
+      const site = window.dsAgent ? await window.dsAgent.detectSite() : 'unknown';
+      const ws = workspacePath || (window.dsAgent ? await window.dsAgent.getWorkspace() : '');
+      const connOk = health && health.success;
+      const toolCount = (tools && tools.data) ? tools.data.length : 0;
+
+      el.innerHTML = '<div class="ds-settings-status-grid">' +
+        '<div class="ds-settings-status-card"><div class="slabel">工具状态</div><div class="svalue ' + (connOk ? 'ok' : 'err') + '">' + (connOk ? '✅ 已就绪' : '❌ 未就绪') + '</div></div>' +
+        '<div class="ds-settings-status-card"><div class="slabel">工具数量</div><div class="svalue">' + toolCount + '</div></div>' +
+        '<div class="ds-settings-status-card"><div class="slabel">Agent 状态</div><div class="svalue">' + (agentRunning ? '🟡 运行中' : '空闲') + '</div></div>' +
+        '<div class="ds-settings-status-card"><div class="slabel">当前站点</div><div class="svalue">' + (site === 'deepseek' ? 'DeepSeek' : site) + '</div></div>' +
+        '</div>' +
+        '<div class="ds-settings-status-card" style="margin-top:8px;"><div class="slabel">工作目录</div><div class="svalue" style="font-size:12px;word-break:break-all;color:var(--ds-accent-blue)">' + escapeHtml(ws || '-') + '</div></div>' +
+        '<div style="margin-top:12px;text-align:center"><button class="ds-settings-btn primary" id="ds-settings-refresh-status">🔄 刷新状态</button></div>';
+      document.getElementById('ds-settings-refresh-status')?.addEventListener('click', refreshSettingsStatus);
+    } catch (e) {
+      el.innerHTML = '<div class="context-empty">加载失败: ' + escapeHtml(e.message || '') + '</div>';
+    }
+  }
+
+  async function refreshSettingsPrompts() {
+    const el = document.getElementById('ds-settings-prompts');
+    if (!el) return;
+    if (!promptManager) { el.innerHTML = '<div class="context-empty">提示词管理器未初始化</div>'; return; }
+    try {
+      const names = promptManager.getSectionNames();
+      const defaults = {};
+      names.forEach(n => { defaults[n] = promptManager.getDefault(n); });
+      const sections = {};
+      names.forEach(n => { sections[n] = promptManager.getSection(n); });
+
+      el.innerHTML = names.map(function(name) {
+        var label = SETTINGS_PROMPT_LABELS[name] || name;
+        var icon = SETTINGS_PROMPT_ICONS[name] || '📝';
+        var value = sections[name] || '';
+        var isDefault = value === defaults[name];
+        var charCount = value.length;
+        var countClass = charCount > 2000 ? ' warn' : '';
+
+        return '<div class="ds-prompt-card">' +
+          '<div class="pcard-header">' +
+            '<div class="pcard-header-left">' +
+              '<div class="pcard-icon">' + icon + '</div>' +
+              '<span class="pcard-name">' + label + '</span>' +
+            '</div>' +
+            '<div class="pcard-actions">' +
+              '<button class="ds-settings-icon-btn reset prompt-reset-btn" data-name="' + name + '" title="重置">↺</button>' +
+              '<button class="ds-settings-icon-btn save prompt-save-btn" data-name="' + name + '" title="保存">✓</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="pcard-body">' +
+            '<textarea id="sprompt-' + name + '" placeholder="输入 ' + label + ' 内容...">' + escapeHtml(value) + '</textarea>' +
+          '</div>' +
+          '<div class="pcard-footer">' +
+            '<span class="pcard-chars' + countClass + '">' + charCount + ' 字符</span>' +
+            '<span class="pcard-badge' + (isDefault ? ' default' : '') + '">' + (isDefault ? '默认' : '已自定义') + '</span>' +
+          '</div>' +
+        '</div>';
+      }).join('') +
+      '<div style="text-align:center;margin-top:8px"><button class="ds-settings-btn outline sm" id="ds-settings-reset-all-prompts">重置全部提示词</button></div>';
+
+      // Bind save
+      el.querySelectorAll('.prompt-save-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var name = btn.dataset.name;
+          var value = document.getElementById('sprompt-' + name).value;
+          promptManager.setSection(name, value);
+          refreshSettingsPrompts();
+        });
+      });
+      // Bind reset
+      el.querySelectorAll('.prompt-reset-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          promptManager.resetSection(btn.dataset.name);
+          refreshSettingsPrompts();
+        });
+      });
+      // Bind reset all
+      document.getElementById('ds-settings-reset-all-prompts')?.addEventListener('click', function() {
+        promptManager.resetSection(null);
+        refreshSettingsPrompts();
+      });
+      // Live char count
+      el.querySelectorAll('textarea').forEach(function(ta) {
+        ta.addEventListener('input', function() {
+          var card = ta.closest('.ds-prompt-card');
+          if (!card) return;
+          var countEl = card.querySelector('.pcard-chars');
+          if (!countEl) return;
+          var len = ta.value.length;
+          countEl.textContent = len + ' 字符';
+          countEl.className = 'pcard-chars' + (len > 2000 ? ' warn' : '');
+        });
+      });
+    } catch (e) {
+      el.innerHTML = '<div class="context-empty">加载失败: ' + escapeHtml(e.message || '') + '</div>';
+    }
+  }
+
+  async function refreshSettingsContext() {
+    const el = document.getElementById('ds-settings-context');
+    if (!el) return;
+    if (!contextManager) { el.innerHTML = '<div class="context-empty">上下文管理器未初始化</div>'; return; }
+    try {
+      var config = contextManager.getConfig();
+      el.innerHTML =
+        '<div class="ds-settings-group"><label>Token 预算</label><input type="number" id="sctx-maxTokens" value="' + (config.maxTokens || 800000) + '" /></div>' +
+        '<div class="ds-settings-group"><label>最少保留轮数</label><input type="number" id="sctx-minRecentExchanges" value="' + (config.minRecentExchanges || 3) + '" /></div>' +
+        '<div class="ds-settings-group"><label>工具结果截断阈值（字符）</label><input type="number" id="sctx-maxToolResultLength" value="' + (config.maxToolResultLength || 4000) + '" /></div>' +
+        '<div class="ds-settings-group"><label>字符/Token 比例</label><input type="number" id="sctx-charsPerToken" value="' + (config.charsPerToken || 2) + '" /></div>' +
+        '<div class="ds-settings-group" style="display:flex;justify-content:space-between;align-items:center;">' +
+          '<label style="margin-bottom:0;">保留原始任务</label>' +
+          '<label class="toggle"><input type="checkbox" id="sctx-keepFirstUserMessage"' + (config.keepFirstUserMessage ? ' checked' : '') + '><span class="slider"></span></label>' +
+        '</div>' +
+        '<div style="text-align:center;margin-top:12px"><button class="ds-settings-btn primary" id="ds-settings-save-context">💾 保存上下文配置</button></div>';
+      document.getElementById('ds-settings-save-context')?.addEventListener('click', async function() {
+        var newConfig = {
+          maxTokens: parseInt(document.getElementById('sctx-maxTokens').value) || 800000,
+          minRecentExchanges: parseInt(document.getElementById('sctx-minRecentExchanges').value) || 3,
+          maxToolResultLength: parseInt(document.getElementById('sctx-maxToolResultLength').value) || 4000,
+          charsPerToken: parseInt(document.getElementById('sctx-charsPerToken').value) || 2,
+          keepFirstUserMessage: document.getElementById('sctx-keepFirstUserMessage').checked
+        };
+        contextManager.updateConfig(newConfig);
+        refreshSettingsContext();
+      });
+    } catch (e) {
+      el.innerHTML = '<div class="context-empty">加载失败: ' + escapeHtml(e.message || '') + '</div>';
+    }
+  }
+
+  async function refreshSettingsConfig() {
+    const el = document.getElementById('ds-settings-config');
+    if (!el) return;
+    try {
+      var ws = workspacePath || (window.dsAgent ? await window.dsAgent.getWorkspace() : '');
+      var savedSteps = maxAgentLoops;
+      var savedConfirm = false;
+      try { savedConfirm = window.dsAgent ? await window.dsAgent.getConfig('confirm_tools') : false; } catch (e) {}
+      var savedTheme = currentTheme;
+
+      el.innerHTML =
+        '<div class="ds-settings-group"><label>工作目录</label>' +
+          '<div style="display:flex;gap:6px;">' +
+            '<input type="text" id="scfg-workspace" value="' + escapeHtml(ws || '') + '" readonly style="flex:1;cursor:default;" />' +
+            '<button class="ds-settings-btn primary sm" id="scfg-select-folder" style="white-space:nowrap;">📁 选择</button>' +
+          '</div>' +
+          '<div style="color:var(--ds-text-muted);font-size:10px;margin-top:3px;">Agent 执行命令和文件操作的根目录</div>' +
+        '</div>' +
+        '<div class="ds-settings-group"><label>聊天站点</label>' +
+          '<select id="scfg-site"><option value="https://chat.deepseek.com">DeepSeek</option></select>' +
+        '</div>' +
+        '<div class="ds-settings-group"><label>Agent 最大循环步数</label>' +
+          '<input type="number" id="scfg-max-steps" value="' + savedSteps + '" min="1" max="500" />' +
+        '</div>' +
+        '<div class="ds-settings-group" style="display:flex;justify-content:space-between;align-items:center;">' +
+          '<label style="margin-bottom:0;">工具调用前确认</label>' +
+          '<label class="toggle"><input type="checkbox" id="scfg-confirm-tools"' + (savedConfirm ? ' checked' : '') + '><span class="slider"></span></label>' +
+        '</div>' +
+        '<div class="ds-settings-group"><label>主题配色</label>' +
+          '<select id="scfg-theme">' +
+            THEME_LIST.map(function(t) { return '<option value="' + t + '"' + (t === savedTheme ? ' selected' : '') + '>' + (THEME_NAMES[t] || t) + '</option>'; }).join('') +
+          '</select>' +
+        '</div>' +
+        '<div style="text-align:center;margin-top:14px"><button class="ds-settings-btn primary" id="ds-settings-save-config">💾 保存设置</button></div>';
+
+      // Select folder
+      document.getElementById('scfg-select-folder')?.addEventListener('click', async function() {
+        if (!window.dsAgent) return;
+        try {
+          var result = await window.dsAgent.selectFolder();
+          if (result) {
+            document.getElementById('scfg-workspace').value = result;
+            workspacePath = result;
+            loadFileTree(result);
+          }
+        } catch (e) { console.error('selectFolder error:', e); }
+      });
+
+      // Save config
+      document.getElementById('ds-settings-save-config')?.addEventListener('click', async function() {
+        if (!window.dsAgent) return;
+        try {
+          var newMaxSteps = parseInt(document.getElementById('scfg-max-steps').value) || 100;
+          var newConfirm = document.getElementById('scfg-confirm-tools').checked;
+          var newTheme = document.getElementById('scfg-theme').value;
+          await window.dsAgent.setConfig('max_steps', newMaxSteps);
+          await window.dsAgent.setConfig('confirm_tools', newConfirm);
+          await window.dsAgent.setConfig('theme', newTheme);
+          maxAgentLoops = newMaxSteps;
+          if (newTheme !== currentTheme) {
+            currentTheme = newTheme;
+            applyTheme();
+          }
+          refreshSettingsConfig();
+        } catch (e) { console.error('save config error:', e); }
+      });
+    } catch (e) {
+      el.innerHTML = '<div class="context-empty">加载失败: ' + escapeHtml(e.message || '') + '</div>';
+    }
+  }
+
+  // Wire up settings sub-tabs (deferred until DOM is ready)
+  function wireSettingsSubtabs() {
+    setTimeout(() => {
+      const subtabs = document.querySelectorAll('.ds-settings-subtab');
+      subtabs.forEach(st => {
+        st.addEventListener('click', () => switchSettingsSubtab(st.dataset.subtab));
+      });
+    }, 0);
+  }
+
+function switchContextTab(tab) {
+  contextTab = tab;
+  const tabs = contextPanel?.querySelectorAll('.ds-context-tab');
+  const panes = contextPanel?.querySelectorAll('.ds-context-pane');
+  if (tabs) {
+    tabs.forEach(t => {
+      t.classList.toggle('active', t.dataset.tab === tab);
+    });
+  }
+  if (panes) {
+    panes.forEach(p => {
+      p.classList.toggle('active', p.dataset.pane === tab);
+    });
+  }
+  // Refresh stats when switching to stats tab
+  if (tab === 'stats') updateStats();
+  // Refresh conversation list when switching to conversations tab
+  if (tab === 'conversations') loadConversationList().catch(err => console.error(PREFIX + ' loadConversationList error:', err));
+  // Refresh settings when switching to settings tab
+  if (tab === 'settings') refreshSettingsStatus();
+}
 
   // ─── Login Detection ────────────────────────────────────────
 
@@ -2566,6 +2965,9 @@ updateStats();
 
     // 1. Create UI
     createPanel();
+
+    // Wire up settings sub-tabs after DOM is ready
+    wireSettingsSubtabs();
 
     // 1.1 默认激活会话 tab，加载会话列表
     loadConversationList().catch(err => console.error(PREFIX + ' init loadConversationList failed:', err));

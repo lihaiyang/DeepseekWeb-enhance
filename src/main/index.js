@@ -33,7 +33,6 @@ const PLATFORM_UA = process.platform === 'win32'
 const CHROME_UA = `Mozilla/5.0 (${PLATFORM_UA}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION} Safari/537.36`;
 
 let mainWindow = null;
-let controlPanel = null;
 let tray = null;
 let isQuitting = false;
 
@@ -122,33 +121,6 @@ function createMainWindow() {
   });
 }
 
-// ─── Control Panel Window ────────────────────────────────────
-function createControlPanel() {
-  if (controlPanel) {
-    controlPanel.focus();
-    return;
-  }
-
-  controlPanel = new BrowserWindow({
-    width: 480,
-    height: 640,
-    title: 'DS Agent — Control Panel',
-    parent: mainWindow,
-    webPreferences: {
-      preload: path.join(__dirname, '..', 'preload', 'index.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
-  });
-
-  controlPanel.loadFile(path.join(__dirname, '..', 'renderer', 'control-panel.html'));
-
-  controlPanel.on('closed', () => {
-    controlPanel = null;
-  });
-}
-
 // ─── System Tray ─────────────────────────────────────────────
 function createTray() {
   const icon = nativeImage.createFromPath(getIconPath());
@@ -156,7 +128,6 @@ function createTray() {
 
   const contextMenu = Menu.buildFromTemplate([
     { label: '打开 DS Agent', click: () => mainWindow?.show() },
-    { label: '控制面板', click: () => createControlPanel() },
     { type: 'separator' },
     { label: 'DeepSeek', click: () => mainWindow?.loadURL('https://chat.deepseek.com') },
     { label: '退出', click: () => { isQuitting = true; tray?.destroy(); tray = null; app.quit(); } },
@@ -247,11 +218,6 @@ function setupIPC() {
       }
       fs.appendFileSync(debugLogPath, line + '\n');
     } catch (e) { /* ignore */ }
-  });
-
-  // Open control panel
-  ipcMain.handle('ui:open-control-panel', () => {
-    createControlPanel();
   });
 
   // Workspace management

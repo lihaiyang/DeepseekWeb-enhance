@@ -37,9 +37,6 @@ contextBridge.exposeInMainWorld('dsAgent', {
   getCurrentURL: () => ipcRenderer.invoke('nav:get-url'),
   detectSite: () => ipcRenderer.invoke('nav:detect-site'),
 
-  // UI
-  openControlPanel: () => ipcRenderer.invoke('ui:open-control-panel'),
-
   // Config
   getConfig: (key) => ipcRenderer.invoke('config:get', key),
   setConfig: (key, value) => ipcRenderer.invoke('config:set', key, value),
