@@ -1,466 +1,233 @@
 /**
- * DS Agent — Preload Script
+ * DS Agent — Preload Script (DeepSeek page)
  *
- * Exposes a safe API bridge between the renderer (chat page) and the main process.
- * This replaces all GM_* calls from the original userscript.
- *
- * Architecture:
- *  - contextBridge.exposeInMainWorld() puts window.dsAgent into the MAIN WORLD
- *  - On chat pages, we inject agent.js as a <script> tag into the page DOM,
- *    which also runs in the MAIN WORLD and can therefore access window.dsAgent
- *  - Network hooks (fetch/XHR) MUST be installed BEFORE the page's JS runs,
- *    so we inject them as early as possible via <script> tag
- *  - Control panel and other windows get the API but no agent injection
- *
- * CRITICAL: Never use document.write() in preload — it replaces the entire
- * document and causes a white screen!
+ * 只关心 DeepSeek 网页：注入反指纹、SSE 解析、DOM bridge、adapter、
+ * DeepSeekClient、deepseek-bridge。所有 UI、会话存储、Prompt 管理都已迁移
+ * 到 pi-coding-agent，本 preload 不再注入它们。
  */
 
 const { contextBridge, ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
-// ─── Expose API to Main World ────────────────────────────────
 contextBridge.exposeInMainWorld('dsAgent', {
-  version: '1.0.0',
+  version: '2.0.0',
 
-  // MCP Tool Calls (pure IPC, no HTTP server)
-  callTool: (toolName, args) => ipcRenderer.invoke('mcp:call-tool', toolName, args),
-  listTools: () => ipcRenderer.invoke('mcp:list-tools'),
-  health: () => ipcRenderer.invoke('mcp:health'),
-
-  // Agent Context
-  updateToolHint: (hint) => ipcRenderer.send('agent:update-tool-hint', hint),
-
-  // Navigation
-  goto: (url) => ipcRenderer.invoke('nav:goto', url),
-  getCurrentURL: () => ipcRenderer.invoke('nav:get-url'),
-  detectSite: () => ipcRenderer.invoke('nav:detect-site'),
-
-  // Config
-  getConfig: (key) => ipcRenderer.invoke('config:get', key),
-  setConfig: (key, value) => ipcRenderer.invoke('config:set', key, value),
-
-  // Workspace
-  getWorkspace: () => ipcRenderer.invoke('workspace:get'),
-  setWorkspace: (path) => ipcRenderer.invoke('workspace:set', path),
-  selectFolder: () => ipcRenderer.invoke('workspace:select-folder'),
-
-  // Events
-  onToolResult: (callback) => {
-    ipcRenderer.on('mcp:tool-result', (_event, result) => callback(result));
-  },
-  onAgentStatus: (callback) => {
-    ipcRenderer.on('agent:status', (_event, status) => callback(status));
-  },
-  removeAllListeners: (channel) => {
-    ipcRenderer.removeAllListeners(channel);
-  },
-
-  // Conversation Management
-  listConversations: () => ipcRenderer.invoke('conversation:list'),
-  getConversation: (id) => ipcRenderer.invoke('conversation:get', id),
-  saveConversation: (conv) => ipcRenderer.invoke('conversation:save', conv),
-  deleteConversation: (id) => ipcRenderer.invoke('conversation:delete', id),
-
-  // Prompt Management (bridge to PromptManager in chat page's main world)
-  getPromptSections: () => ipcRenderer.invoke('prompt:get-sections'),
-  setPromptSection: (name, value) => ipcRenderer.invoke('prompt:set-section', name, value),
-  resetPromptSection: (name) => ipcRenderer.invoke('prompt:reset-section', name),
-  getPromptDefaults: () => ipcRenderer.invoke('prompt:get-defaults'),
-
-  // Context Management (bridge to ContextManager in chat page's main world)
-  getContextConfig: () => ipcRenderer.invoke('context:get-config'),
-  setContextConfig: (key, value) => ipcRenderer.invoke('context:set-config', key, value),
-
-  // Conversation switching (bridge to ConversationManager in chat page's main world)
-  switchConversation: (id) => ipcRenderer.invoke('conversation:switch', id),
-  getCurrentConversationId: () => ipcRenderer.invoke('conversation:get-current-id'),
-
-  // Debug: write a log line to ~/.ds-agent/log/ds-agent.log via main process
+  // Debug logger — writes to ~/.ds-agent/log/ds-agent.log via main.
   debugLog: (line) => ipcRenderer.send('debug:log', line),
+
+  // LLM bridge: main ↔ this page. See src/main/llm-bridge.js
+  llm: {
+    onRun:   (cb) => ipcRenderer.on('llm:run',   (_e, p) => cb(p)),
+    onAbort: (cb) => ipcRenderer.on('llm:abort', (_e, p) => cb(p)),
+    thinking: (requestId, delta) => ipcRenderer.send('llm:thinking', { requestId, delta }),
+    content:  (requestId, delta) => ipcRenderer.send('llm:content',  { requestId, delta }),
+    end:      (requestId)        => ipcRenderer.send('llm:end',      { requestId }),
+    error:    (requestId, msg)   => ipcRenderer.send('llm:error',    { requestId, message: msg }),
+  },
 });
 
-console.log('[DS Agent] Preload script loaded — window.dsAgent API available');
+console.log('[DS Agent] Preload loaded — window.dsAgent ready');
 
-// ─── Detect if we're on a chat page ──────────────────────────
-const CHAT_HOSTNAMES = ['chat.deepseek.com'];
-const currentURL = window.location.href;
-const isChatPage = CHAT_HOSTNAMES.some(h => currentURL.includes(h));
+// ─── Anti-fingerprint + Network hooks + DeepSeek bridge ──────────────────
+// All run in the page's MAIN WORLD via injected <script> tags.
 
-if (isChatPage) {
-  // ─── Anti-Fingerprint Injection ────────────────────────────
-  // Remove Electron/Chromium-specific properties that leak the app is not
-  // a normal Chrome browser. This must run BEFORE any page JS.
-  const antiFingerprintCode = `
-(function() {
+const ANTI_FP_CODE = `
+(function () {
   'use strict';
-  // Remove navigator.webdriver (set to undefined, not false — more natural)
   Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true });
-
-  // Remove Electron-specific properties from navigator
-  // Some sites check for these to detect Electron apps
-  if (navigator.plugins) {
-    // Override plugins to look like a standard Chrome install
-    Object.defineProperty(navigator, 'plugins', {
-      get: () => {
-        // Standard Chrome has PluginArray with common plugins
-        return [
-          Object.create(Plugin.prototype, {
-            name: { value: 'Chrome PDF Plugin' },
-            filename: { value: 'internal-pdf-viewer' },
-            description: { value: 'Portable Document Format' },
-            length: { value: 1 },
-            '0': { value: { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' } }
-          }),
-          Object.create(Plugin.prototype, {
-            name: { value: 'Chrome PDF Viewer' },
-            filename: { value: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-            description: { value: '' },
-            length: { value: 1 },
-            '0': { value: { type: 'application/pdf', suffixes: 'pdf', description: '' } }
-          }),
-          Object.create(Plugin.prototype, {
-            name: { value: 'Native Client' },
-            filename: { value: 'internal-nacl-plugin' },
-            description: { value: '' },
-            length: { value: 2 },
-            '0': { value: { type: 'application/x-nacl', suffixes: '', description: 'Native Client Executable' } },
-            '1': { value: { type: 'application/x-pnacl', suffixes: '', description: 'Portable Native Client Executable' } }
-          })
-        ];
-      },
-      configurable: true
-    });
-  }
-
-  // Override navigator.mimeTypes
-  Object.defineProperty(navigator, 'mimeTypes', {
-    get: () => {
-      return [
-        { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
-        { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' }
-      ];
-    },
-    configurable: true
-  });
-
-  // Ensure navigator.platform matches our UA (macOS)
-  // This is usually correct in Electron on macOS, but let's be safe
-
-  // Remove any Electron-specific globals that pages might detect
-  // Note: window.__dsAgent is our own API — it's not a standard Electron thing
-  // so it shouldn't trigger detection
-
-  // Fake chrome runtime (some sites check for this to detect Chrome)
-  if (!window.chrome) {
-    window.chrome = {};
-  }
+  if (!window.chrome) window.chrome = {};
   if (!window.chrome.runtime) {
     window.chrome.runtime = {
-      connect: function() {},
-      sendMessage: function() {},
-      onMessage: { addListener: function() {} }
+      connect: function () {}, sendMessage: function () {},
+      onMessage: { addListener: function () {} }
     };
   }
-
-  console.log('[DS Agent] Anti-fingerprint patch applied');
 })();
 `;
 
-  // ─── Early Network Hook Injection ──────────────────────────
-  // CRITICAL: We must hook fetch/XHR BEFORE the page's JavaScript uses them.
-  // We inject a <script> tag that runs in the MAIN WORLD as early as possible.
+const EARLY_HOOK_CODE = (
+  '(function () {\n' +
+  '  "use strict";\n' +
+  '  if (window.__dsAgentHooksInstalled) return;\n' +
+  '  window.__dsAgentHooksInstalled = true;\n' +
+  '  var PREFIX = "[DS Agent]";\n' +
+  '  var _origFetch = window.fetch;\n' +
+  '  var _origXHROpen = XMLHttpRequest.prototype.open;\n' +
+  '  var _origXHRSend = XMLHttpRequest.prototype.send;\n' +
+  '  window.__dsAgentToolHint = "";\n' +
+  '  window.__dsAgentOrigFetch = _origFetch;\n' +
+  '\n' +
+  '  function modifyRequestBody(bodyStr) {\n' +
+  '    if (!bodyStr) return bodyStr;\n' +
+  '    var hint = window.__dsAgentToolHint;\n' +
+  '    if (!hint) return bodyStr;\n' +
+  '    try {\n' +
+  '      var parsed = JSON.parse(bodyStr);\n' +
+  '      if (bodyStr.indexOf("[系统指令]") !== -1) return bodyStr;\n' +
+  '      if (parsed.prompt && typeof parsed.prompt === "string") {\n' +
+  '        parsed.prompt = hint + "\\n\\n" + parsed.prompt;\n' +
+  '        return JSON.stringify(parsed);\n' +
+  '      }\n' +
+  '    } catch (_) {}\n' +
+  '    return bodyStr;\n' +
+  '  }\n' +
+  '\n' +
+  '  window.fetch = async function () {\n' +
+  '    var url = (typeof arguments[0] === "string") ? arguments[0] : (arguments[0] && arguments[0].url);\n' +
+  '    var isCompletion = url && (url.indexOf("completion") !== -1 || url.indexOf("conversation") !== -1);\n' +
+  '    if (isCompletion && arguments[1] && arguments[1].body) {\n' +
+  '      try { arguments[1].body = modifyRequestBody(arguments[1].body); } catch (_) {}\n' +
+  '    }\n' +
+  '    var response = await _origFetch.apply(this, arguments);\n' +
+  '    if (isCompletion && response.body) {\n' +
+  '      var clone = response.clone();\n' +
+  '      var reader = clone.body.getReader();\n' +
+  '      var decoder = new TextDecoder("utf-8");\n' +
+  '      var buffer = "";\n' +
+  '      var thinkingAcc = { val: "" };\n' +
+  '      var responseAcc = { val: "" };\n' +
+  '      var pTracker = {};\n' +
+  '      var lastLens = { thinkingLen: 0, responseLen: 0 };\n' +
+  '      function pump() {\n' +
+  '        reader.read().then(function (result) {\n' +
+  '          if (result.done) {\n' +
+  '            if (buffer.trim()) {\n' +
+  '              var lines = buffer.split("\\n");\n' +
+  '              for (var i = 0; i < lines.length; i++) window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, pTracker);\n' +
+  '            }\n' +
+  '            lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true, lastLens.thinkingLen, lastLens.responseLen, pTracker);\n' +
+  '            return;\n' +
+  '          }\n' +
+  '          var chunk = decoder.decode(result.value, { stream: true });\n' +
+  '          buffer += chunk;\n' +
+  '          var idx;\n' +
+  '          while ((idx = buffer.indexOf("\\n\\n")) !== -1) {\n' +
+  '            var eventText = buffer.substring(0, idx);\n' +
+  '            buffer = buffer.substring(idx + 2);\n' +
+  '            if (eventText.trim()) {\n' +
+  '              var lines2 = eventText.split("\\n");\n' +
+  '              for (var j = 0; j < lines2.length; j++) window.__dsAgentProcessLine(lines2[j], thinkingAcc, responseAcc, pTracker);\n' +
+  '            }\n' +
+  '          }\n' +
+  '          lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, false, lastLens.thinkingLen, lastLens.responseLen, pTracker);\n' +
+  '          pump();\n' +
+  '        }).catch(function (err) {\n' +
+  '          console.error(PREFIX + " stream err:", err);\n' +
+  '          lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true, lastLens.thinkingLen, lastLens.responseLen, pTracker);\n' +
+  '        });\n' +
+  '      }\n' +
+  '      pump();\n' +
+  '    }\n' +
+  '    return response;\n' +
+  '  };\n' +
+  '\n' +
+  '  var xhrMeta = new WeakMap();\n' +
+  '  XMLHttpRequest.prototype.open = function (method, url) {\n' +
+  '    xhrMeta.set(this, { url: url, method: method });\n' +
+  '    return _origXHROpen.apply(this, arguments);\n' +
+  '  };\n' +
+  '  XMLHttpRequest.prototype.send = function (body) {\n' +
+  '    var meta = xhrMeta.get(this);\n' +
+  '    var isCompletion = meta && meta.url && (meta.url.indexOf("completion") !== -1 || meta.url.indexOf("conversation") !== -1);\n' +
+  '    if (isCompletion && body) {\n' +
+  '      try { body = modifyRequestBody(body); } catch (_) {}\n' +
+  '    }\n' +
+  '    if (isCompletion) {\n' +
+  '      var thinkingAcc = { val: "" };\n' +
+  '      var responseAcc = { val: "" };\n' +
+  '      var lastProcessedLen = 0;\n' +
+  '      var lastLens = { thinkingLen: 0, responseLen: 0 };\n' +
+  '      var xhrBuffer = "";\n' +
+  '      var xhrPTracker = {};\n' +
+  '      this.addEventListener("readystatechange", function () {\n' +
+  '        try {\n' +
+  '          if (this.readyState === 3 || this.readyState === 4) {\n' +
+  '            var rt = this.responseText || "";\n' +
+  '            var newText = rt.substring(lastProcessedLen);\n' +
+  '            lastProcessedLen = rt.length;\n' +
+  '            xhrBuffer += newText;\n' +
+  '            var idx;\n' +
+  '            while ((idx = xhrBuffer.indexOf("\\n\\n")) !== -1) {\n' +
+  '              var eventText = xhrBuffer.substring(0, idx);\n' +
+  '              xhrBuffer = xhrBuffer.substring(idx + 2);\n' +
+  '              if (eventText.trim()) {\n' +
+  '                var lines = eventText.split("\\n");\n' +
+  '                for (var i = 0; i < lines.length; i++) window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, xhrPTracker);\n' +
+  '              }\n' +
+  '            }\n' +
+  '            if (this.readyState === 4 && xhrBuffer.trim()) {\n' +
+  '              var lines = xhrBuffer.split("\\n");\n' +
+  '              for (var k = 0; k < lines.length; k++) window.__dsAgentProcessLine(lines[k], thinkingAcc, responseAcc, xhrPTracker);\n' +
+  '              xhrBuffer = "";\n' +
+  '            }\n' +
+  '            lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, this.readyState === 4, lastLens.thinkingLen, lastLens.responseLen, xhrPTracker);\n' +
+  '          }\n' +
+  '        } catch (e) { console.error(PREFIX + " XHR err:", e); }\n' +
+  '      });\n' +
+  '    }\n' +
+  '    return _origXHRSend.apply(this, [body]);\n' +
+  '  };\n' +
+  '})();'
+);
 
-  // ─── Build injected script (network hooks only, SSE parsing moved to sse-parser.js) ──
-  // Using .toString() avoids a fragile 250-line template literal.
-  const earlyHookCode =
-    '(function() {\n' +
-    '  "use strict";\n' +
-    '  if (window.__dsAgentHooksInstalled) { console.log("[DS Agent] Hooks already installed, skipping re-injection"); return; }\n' +
-    '  window.__dsAgentHooksInstalled = true;\n' +
-    '  var PREFIX = "[DS Agent]";\n' +
-    '  var _origFetch = window.fetch;\n' +
-    '  var _origXHROpen = XMLHttpRequest.prototype.open;\n' +
-    '  var _origXHRSend = XMLHttpRequest.prototype.send;\n' +
-    '  window.__dsAgentToolHint = "";\n' +
-    '  window.__dsAgentOrigFetch = _origFetch;\n' +
-    '\n' +
-    '  function modifyRequestBody(bodyStr) {\n' +
-    '    if (!bodyStr) return bodyStr;\n' +
-    '    var hint = window.__dsAgentToolHint;\n' +
-    '    if (!hint) return bodyStr;\n' +
-    '    try {\n' +
-    '      var parsed = JSON.parse(bodyStr);\n' +
-    '      if (bodyStr.indexOf("[系统指令]") !== -1) return bodyStr;\n' +
-    '      if (parsed.prompt && typeof parsed.prompt === "string") {\n' +
-    '        parsed.prompt = hint + "\\n\\n" + parsed.prompt;\n' +
-    '        return JSON.stringify(parsed);\n' +
-    '      }\n' +
-    '    } catch(e) {}\n' +
-    '    return bodyStr;\n' +
-    '  }\n' +
-    '\n' +
-    '  window.fetch = async function() {\n' +
-    '    var url = (typeof arguments[0] === "string") ? arguments[0] : (arguments[0] && arguments[0].url);\n' +
-    '    console.log(PREFIX + " fetch called: " + (url || "(unknown)").substring(0, 120));\n' +
-    '    var isCompletion = url && (url.indexOf("completion") !== -1 || url.indexOf("conversation") !== -1);\n' +
-    '    if (isCompletion && arguments[1] && arguments[1].body) {\n' +
-    '      try { arguments[1].body = modifyRequestBody(arguments[1].body); } catch(e) {}\n' +
-    '    }\n' +
-    '    var response = await _origFetch.apply(this, arguments);\n' +
-    '    if (isCompletion && response.body) {\n' +
-    '      console.log(PREFIX + " Fetch SSE intercepted: " + url);\n' +
-    '      var clone = response.clone();\n' +
-    '      var reader = clone.body.getReader();\n' +
-    '      var decoder = new TextDecoder("utf-8");\n' +
-    '      var buffer = "";\n' +
-    '      var thinkingAcc = { val: "" };\n' +
-    '      var responseAcc = { val: "" };\n' +
-    '      var pTracker = {};\n' +
-    '      var lastLens = { thinkingLen: 0, responseLen: 0 };\n' +
-    '      function pump() {\n' +
-    '        reader.read().then(function(result) {\n' +
-    '          if (result.done) {\n' +
-    '            console.log(PREFIX + " SSE stream done, thinking=\" + thinkingAcc.val.length + \" response=\" + responseAcc.val.length);\n' +
-    '            if (buffer.trim()) {\n' +
-    '              var lines = buffer.split("\\n");\n' +
-    '              for (var i = 0; i < lines.length; i++) { window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, pTracker); }\n' +
-    '            }\n' +
-    '            lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true, lastLens.thinkingLen, lastLens.responseLen, pTracker);\n' +
-    '            var pKeys = Object.keys(pTracker).filter(function(k) { return k !== "undefined" && k.charAt(0) !== "_"; });\n' +
-    '            if (pKeys.length > 0) { console.log(PREFIX + " SSE p-values:", JSON.stringify(pKeys), JSON.stringify(pTracker)); }\n' +
-    '            return;\n' +
-    '          }\n' +
-    '          var chunk = decoder.decode(result.value, { stream: true });\n' +
-    '          buffer += chunk;\n' +
-    '          var idx;\n' +
-    '          while ((idx = buffer.indexOf("\\n\\n")) !== -1) {\n' +
-    '            var eventText = buffer.substring(0, idx);\n' +
-    '            buffer = buffer.substring(idx + 2);\n' +
-    '            if (eventText.trim()) {\n' +
-    '              var lines = eventText.split("\\n");\n' +
-    '              for (var i = 0; i < lines.length; i++) { window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, pTracker); }\n' +
-    '            }\n' +
-    '          }\n' +
-    '          lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, false, lastLens.thinkingLen, lastLens.responseLen, pTracker);\n' +
-    '          pump();\n' +
-    '        }).catch(function(err) {\n' +
-    '          console.error(PREFIX + " Stream error:", err);\n' +
-    '          lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true, lastLens.thinkingLen, lastLens.responseLen, pTracker);\n' +
-    '        });\n' +
-    '      }\n' +
-    '      pump();\n' +
-    '    }\n' +
-    '    return response;\n' +
-    '  };\n' +
-    '\n' +
-    '  var xhrMeta = new WeakMap();\n' +
-    '  XMLHttpRequest.prototype.open = function(method, url) {\n' +
-    '    xhrMeta.set(this, { url: url, method: method });\n' +
-    '    return _origXHROpen.apply(this, arguments);\n' +
-    '  };\n' +
-    '  XMLHttpRequest.prototype.send = function(body) {\n' +
-    '    var meta = xhrMeta.get(this);\n' +
-    '    console.log(PREFIX + " XHR send: " + ((meta && meta.url) || "(unknown)").substring(0, 120));\n' +
-    '    var isCompletion = meta && meta.url && (meta.url.indexOf("completion") !== -1 || meta.url.indexOf("conversation") !== -1);\n' +
-    '    if (isCompletion && body) {\n' +
-    '      try { body = modifyRequestBody(body); } catch(e) {}\n' +
-    '    }\n' +
-    '    if (isCompletion) {\n' +
-    '      console.log(PREFIX + " XHR completion intercepted: " + ((meta && meta.url) || ""));\n' +
-    '      var thinkingAcc = { val: "" };\n' +
-    '      var responseAcc = { val: "" };\n' +
-    '      var lastProcessedLen = 0;\n' +
-    '      var lastLens = { thinkingLen: 0, responseLen: 0 };\n' +
-    '      var xhrBuffer = "";\n' +
-    '      var xhrPTracker = {};\n' +
-    '      this.addEventListener("readystatechange", function() {\n' +
-    '        try {\n' +
-    '          console.log(PREFIX + " XHR readyState=" + this.readyState + " status=" + this.status);\n' +
-    '          if (this.readyState === 3 || this.readyState === 4) {\n' +
-    '            var rt = this.responseText || "";\n' +
-    '            var newText = rt.substring(lastProcessedLen);\n' +
-    '            lastProcessedLen = rt.length;\n' +
-    '            xhrBuffer += newText;\n' +
-    '            var idx;\n' +
-    '            while ((idx = xhrBuffer.indexOf("\\n\\n")) !== -1) {\n' +
-    '              var eventText = xhrBuffer.substring(0, idx);\n' +
-    '              xhrBuffer = xhrBuffer.substring(idx + 2);\n' +
-    '              if (eventText.trim()) {\n' +
-    '                var lines = eventText.split("\\n");\n' +
-    '                for (var i = 0; i < lines.length; i++) { window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, xhrPTracker); }\n' +
-    '              }\n' +
-    '            }\n' +
-    '            if (this.readyState === 4 && xhrBuffer.trim()) {\n' +
-    '              var lines = xhrBuffer.split("\\n");\n' +
-    '              for (var i = 0; i < lines.length; i++) { window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, xhrPTracker); }\n' +
-    '              xhrBuffer = "";\n' +
-    '            }\n' +
-    '            lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, this.readyState === 4, lastLens.thinkingLen, lastLens.responseLen, xhrPTracker);\n' +
-    '            if (this.readyState === 4) console.log(PREFIX + " XHR stream done, thinking=" + thinkingAcc.val.length + " response=" + responseAcc.val.length);\n' +
-    '          }\n' +
-    '        } catch(e) { console.error(PREFIX + " XHR readystatechange error:", e); }\n' +
-    '      });\n' +
-    '    }\n' +
-    '    return _origXHRSend.apply(this, [body]);\n' +
-    '  };\n' +
-    '\n' +
-    '  console.log(PREFIX + " Network hooks installed (early injection)");\n' +
-    '})();\n' +
-    '';
+function injectScriptToMainWorld(code, scriptId) {
+  const script = document.createElement('script');
+  script.textContent = code;
+  script.id = scriptId;
+  const target = document.documentElement;
+  if (!target) return false;
+  target.prepend(script);
+  script.remove();
+  return true;
+}
 
-  // ─── Inject <script> tag into MAIN WORLD ───────────────────
-  // CRITICAL: Never use document.write() — it replaces the entire document!
-  //
-  // In Electron's preload, document.documentElement exists as an empty <html>
-  // element before page HTML starts loading. We prepend our <script> to it.
-  // The script runs synchronously in the MAIN WORLD, hooking fetch/XHR before
-  // the page's own JavaScript executes.
-
-  function injectScriptToMainWorld(code, scriptId) {
-    const script = document.createElement('script');
-    script.textContent = code;
-    script.id = scriptId;
-
-    const target = document.documentElement;
-    if (target) {
-      target.prepend(script);
-      // Remove the script element after execution to keep DOM clean
-      // (the code has already executed synchronously)
-      script.remove();
-      return true;
-    }
-    return false;
-  }
-
-  // ─── Inject anti-fingerprint + SSE parser + network hooks ───
-  // CRITICAL: SSE parser MUST be injected before network hooks because
-  // hooks reference window.__dsAgentProcessLine / __dsAgentFireCallbacks
-  // defined by the SSE parser.
-  //
-  // All three are injected immediately. If any fail (documentElement not
-  // ready), a SINGLE MutationObserver retries all three in the correct order.
-
-  // Read SSE parser code (needed for both immediate and fallback paths)
-  let sseParserCode = '';
+function readModule(relativePath) {
   try {
-    const sseParserPath = path.join(__dirname, '..', 'renderer', 'deepseek', 'sse-parser.js');
-    sseParserCode = fs.readFileSync(sseParserPath, 'utf-8');
+    return fs.readFileSync(path.join(__dirname, '..', relativePath), 'utf-8');
   } catch (err) {
-    console.error('[DS Agent] Failed to read SSE parser:', err);
+    console.error('[DS Agent] Failed to read ' + relativePath + ':', err);
+    return '';
   }
+}
 
-  // Try immediate injection
-  const antiFpInjected = injectScriptToMainWorld(antiFingerprintCode, 'ds-agent-antifp');
-  if (antiFpInjected) {
-    console.log('[DS Agent] Anti-fingerprint script injected');
-  }
+const sseParserCode    = readModule('renderer/deepseek/sse-parser.js');
+const domBridgeCode    = readModule('renderer/deepseek/dom-bridge.js');
+const adapterCode      = readModule('renderer/deepseek/adapter.js');
+const deepseekClientCode = readModule('renderer/api/DeepSeekClient.js');
+const dsBridgeCode     = readModule('renderer/deepseek-bridge.js');
 
-  const sseInjected = sseParserCode ? injectScriptToMainWorld(sseParserCode, 'ds-agent-sse-parser') : false;
-  if (sseInjected) {
-    console.log('[DS Agent] SSE parser injected');
-  }
+// 1. Inject anti-fingerprint + sse parser + early network hooks ASAP
+let injectedEarly = false;
+function injectEarly() {
+  if (injectedEarly) return true;
+  if (!document.documentElement) return false;
+  injectScriptToMainWorld(ANTI_FP_CODE,    'ds-agent-antifp');
+  if (sseParserCode) injectScriptToMainWorld(sseParserCode, 'ds-agent-sse-parser');
+  injectScriptToMainWorld(EARLY_HOOK_CODE, 'ds-agent-hooks');
+  injectedEarly = true;
+  console.log('[DS Agent] Early injection complete');
+  return true;
+}
 
-  const hooksInjected = injectScriptToMainWorld(earlyHookCode, 'ds-agent-hooks');
-  if (hooksInjected) {
-    console.log('[DS Agent] Early network hooks injected');
-  }
+if (!injectEarly()) {
+  const obs = new MutationObserver(() => {
+    if (injectEarly()) obs.disconnect();
+  });
+  obs.observe(document, { childList: true, subtree: false });
+}
 
-  // Single fallback: if ANY injection failed, retry all in correct order
-  if (!antiFpInjected || !sseInjected || !hooksInjected) {
-    const observer = new MutationObserver(() => {
-      if (document.documentElement) {
-        observer.disconnect();
-        if (!antiFpInjected) injectScriptToMainWorld(antiFingerprintCode, 'ds-agent-antifp');
-        if (!sseInjected && sseParserCode) injectScriptToMainWorld(sseParserCode, 'ds-agent-sse-parser');
-        if (!hooksInjected) injectScriptToMainWorld(earlyHookCode, 'ds-agent-hooks');
-        console.log('[DS Agent] Scripts injected via MutationObserver fallback');
-      }
-    });
-    observer.observe(document, { childList: true, subtree: false });
-  }
+// 2. Inject DOM bridge + adapter + DeepSeekClient + bridge after DOM ready
+function injectRuntimeChain() {
+  if (domBridgeCode)      injectScriptToMainWorld(domBridgeCode,      'ds-agent-dom-bridge');
+  if (adapterCode)        injectScriptToMainWorld(adapterCode,        'ds-agent-adapter');
+  if (deepseekClientCode) injectScriptToMainWorld(deepseekClientCode, 'ds-agent-deepseek-client');
+  if (dsBridgeCode)       injectScriptToMainWorld(dsBridgeCode,       'ds-agent-bridge');
+  console.log('[DS Agent] Runtime chain injected');
+}
 
-  // ─── Inject Adapter + Agent Script after DOM Ready ──────────
-  function injectAdapterAndAgent() {
-    // 1. DOM bridge
-    try {
-      const domBridgePath = path.join(__dirname, '..', 'renderer', 'deepseek', 'dom-bridge.js');
-      const domBridgeCode = fs.readFileSync(domBridgePath, 'utf-8');
-      injectScriptToMainWorld(domBridgeCode, 'ds-agent-dom-bridge');
-      console.log('[DS Agent] DOM bridge injected');
-    } catch (err) {
-      console.error('[DS Agent] Failed to inject DOM bridge:', err);
-    }
-
-    // 2. Adapter
-    try {
-      const adapterPath = path.join(__dirname, '..', 'renderer', 'deepseek', 'adapter.js');
-      const adapterCode = fs.readFileSync(adapterPath, 'utf-8');
-      injectScriptToMainWorld(adapterCode, 'ds-agent-adapter');
-      console.log('[DS Agent] Adapter injected');
-    } catch (err) {
-      console.error('[DS Agent] Failed to inject adapter:', err);
-    }
-
-    // 3. ConversationManager (new: local conversation state management)
-    try {
-      const convMgrPath = path.join(__dirname, '..', 'renderer', 'conversation', 'ConversationManager.js');
-      const convMgrCode = fs.readFileSync(convMgrPath, 'utf-8');
-      injectScriptToMainWorld(convMgrCode, 'ds-agent-conversation-manager');
-      console.log('[DS Agent] ConversationManager injected');
-    } catch (err) {
-      console.error('[DS Agent] Failed to inject ConversationManager:', err);
-    }
-
-    // 4. DeepSeekClient (new: direct API calls, bypass DOM injection)
-    try {
-      const clientPath = path.join(__dirname, '..', 'renderer', 'api', 'DeepSeekClient.js');
-      const clientCode = fs.readFileSync(clientPath, 'utf-8');
-      injectScriptToMainWorld(clientCode, 'ds-agent-deepseek-client');
-      console.log('[DS Agent] DeepSeekClient injected');
-    } catch (err) {
-      console.error('[DS Agent] Failed to inject DeepSeekClient:', err);
-    }
-
-    // 4.5 PromptManager (new: template-based prompt management)
-    try {
-      const promptMgrPath = path.join(__dirname, '..', 'renderer', 'prompt', 'PromptManager.js');
-      const promptMgrCode = fs.readFileSync(promptMgrPath, 'utf-8');
-      injectScriptToMainWorld(promptMgrCode, 'ds-agent-prompt-manager');
-      console.log('[DS Agent] PromptManager injected');
-    } catch (err) {
-      console.error('[DS Agent] Failed to inject PromptManager:', err);
-    }
-
-    // 4.6 ContextManager (new: agent context window management)
-    try {
-      const ctxMgrPath = path.join(__dirname, '..', 'renderer', 'context', 'ContextManager.js');
-      const ctxMgrCode = fs.readFileSync(ctxMgrPath, 'utf-8');
-      injectScriptToMainWorld(ctxMgrCode, 'ds-agent-context-manager');
-      console.log('[DS Agent] ContextManager injected');
-    } catch (err) {
-      console.error('[DS Agent] Failed to inject ContextManager:', err);
-    }
-
-    // 5. Agent script
-    try {
-      const agentScriptPath = path.join(__dirname, '..', 'renderer', 'agent.js');
-      const agentCode = fs.readFileSync(agentScriptPath, 'utf-8');
-
-      const existing = document.getElementById('ds-agent-injected');
-      if (existing) existing.remove();
-
-      injectScriptToMainWorld(agentCode, 'ds-agent-injected');
-      console.log('[DS Agent] Agent script injected via <script> tag');
-    } catch (err) {
-      console.error('[DS Agent] Failed to inject agent script:', err);
-    }
-  }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', injectAdapterAndAgent);
-  } else {
-    injectAdapterAndAgent();
-  }
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', injectRuntimeChain);
+} else {
+  injectRuntimeChain();
 }
