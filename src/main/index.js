@@ -23,6 +23,7 @@ const os = require('os');
 
 const { LlmBridge } = require('./llm-bridge');
 const { createHttpServer } = require('./http-server');
+const { DEFAULT_TEMPLATE: DEFAULT_PROMPT_TEMPLATE } = require('./protocol/build-prompt');
 const piHome = require('./pi-home');
 const { PiRunner } = require('./pi-runner');
 
@@ -31,6 +32,19 @@ const IS_DEV = process.argv.includes('--dev');
 const DEEPSEEK_URL = 'https://chat.deepseek.com';
 const HEADER_HEIGHT = 36;
 const CHROME_VERSION = '135.0.0.0';
+
+// Native title-bar replacement. On Windows/Linux Chromium draws the
+// min/max/close buttons inside an overlay area that respects our colours;
+// on macOS the traffic-light buttons are kept automatically.
+const TITLE_BAR_CONFIG = {
+  titleBarStyle: 'hidden',
+  titleBarOverlay: process.platform === 'darwin'
+    ? undefined
+    : { color: '#16161a', symbolColor: '#d8d8d8', height: HEADER_HEIGHT },
+  // Hide the traffic lights on macOS keeps things uniform; leave them
+  // visible (default) so users still have OS-level window controls.
+  trafficLightPosition: process.platform === 'darwin' ? { x: 10, y: 10 } : undefined,
+};
 
 const PLATFORM_UA = process.platform === 'win32'
   ? 'Windows NT 10.0; Win64; x64'
@@ -50,6 +64,7 @@ let httpServer = null;
 let httpPort = 0;
 let runner = null;
 let logStream = null;
+let promptEditorWindow = null;
 
 // ─── Logging ─────────────────────────────────────────────────────────
 function getLogPath() {
@@ -86,6 +101,26 @@ function defaultWorkspace() {
   return os.homedir();
 }
 
+// ─── Prompt template (user-overridable) ──────────────────────────────
+function getCurrentPromptTemplate() {
+  const t = loadConfig().promptTemplate;
+  return (typeof t === 'string' && t.trim()) ? t : DEFAULT_PROMPT_TEMPLATE;
+}
+
+function setCurrentPromptTemplate(template) {
+  if (typeof template !== 'string') return;
+  // Empty / whitespace-only → treat as "reset to default".
+  if (!template.trim()) {
+    const cur = loadConfig();
+    delete cur.promptTemplate;
+    try { fs.writeFileSync(appConfigPath(), JSON.stringify(cur, null, 2), 'utf-8'); } catch (_) {}
+    log('prompt', { event: 'cleared' });
+    return;
+  }
+  saveConfig({ promptTemplate: template });
+  log('prompt', { event: 'updated', length: template.length });
+}
+
 // ─── Anti-fingerprint session config ─────────────────────────────────
 function configureSession() {
   const ses = session.defaultSession;
@@ -119,6 +154,7 @@ function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1400, height: 900, title: 'DS Agent', icon: iconPath(),
     backgroundColor: '#0e0e0f',
+    ...TITLE_BAR_CONFIG,
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'terminal.js'),
       contextIsolation: true,
@@ -186,6 +222,33 @@ function setDeepseekVisible(vis) {
   log('view', { deepseekVisible });
 }
 
+// ─── Prompt editor window ────────────────────────────────────────────
+function openPromptEditor() {
+  if (promptEditorWindow && !promptEditorWindow.isDestroyed()) {
+    promptEditorWindow.show();
+    promptEditorWindow.focus();
+    return;
+  }
+  promptEditorWindow = new BrowserWindow({
+    width: 900, height: 720,
+    title: '提示词编辑',
+    parent: mainWindow || undefined,
+    modal: false,
+    backgroundColor: '#0e0e0f',
+    autoHideMenuBar: true,
+    ...TITLE_BAR_CONFIG,
+    webPreferences: {
+      preload: path.join(__dirname, '..', 'preload', 'prompt-editor.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+  promptEditorWindow.loadFile(path.join(__dirname, '..', 'renderer', 'prompt-editor', 'index.html'));
+  if (IS_DEV) promptEditorWindow.webContents.openDevTools({ mode: 'detach' });
+  promptEditorWindow.on('closed', () => { promptEditorWindow = null; });
+}
+
 // ─── Tray ────────────────────────────────────────────────────────────
 function createTray() {
   const icon = nativeImage.createFromPath(iconPath());
@@ -193,7 +256,7 @@ function createTray() {
   const menu = Menu.buildFromTemplate([
     { label: '显示主窗口', click: () => mainWindow && mainWindow.show() },
     { label: '显示 DeepSeek', click: () => { mainWindow && mainWindow.show(); setDeepseekVisible(true); } },
-    { label: '返回终端',     click: () => setDeepseekVisible(false) },
+    { label: '显示终端',     click: () => setDeepseekVisible(false) },
     { type: 'separator' },
     { label: '退出', click: () => { isQuitting = true; tray.destroy(); tray = null; app.quit(); } },
   ]);
@@ -240,15 +303,39 @@ function wireIpc() {
     }
     return { changed: true, cwd: newCwd };
   });
+
+  // Prompt template editor
+  ipcMain.on('prompt:open-editor', () => openPromptEditor());
+  ipcMain.handle('prompt:get-current', () => getCurrentPromptTemplate());
+  ipcMain.handle('prompt:get-default', () => DEFAULT_PROMPT_TEMPLATE);
+  ipcMain.handle('prompt:is-custom', () => {
+    const t = loadConfig().promptTemplate;
+    return typeof t === 'string' && t.trim().length > 0;
+  });
+  ipcMain.handle('prompt:set', (_e, template) => {
+    setCurrentPromptTemplate(typeof template === 'string' ? template : '');
+    return true;
+  });
+  ipcMain.handle('prompt:reset', () => {
+    setCurrentPromptTemplate('');
+    return true;
+  });
 }
 
 // ─── App lifecycle ───────────────────────────────────────────────────
 app.whenReady().then(async () => {
+  // Drop the default File/Edit/View menu bar — we don't expose any actions
+  // through it. This affects every BrowserWindow this app creates.
+  Menu.setApplicationMenu(null);
+
   configureSession();
   wireIpc();
 
   // 1. Bridge + HTTP server (must bind before pi-home.prepare writes the port)
-  bridge = new LlmBridge();
+  bridge = new LlmBridge({
+    getTemplate: getCurrentPromptTemplate,
+    log: (tag, p) => log(tag, p || {}),
+  });
   httpServer = createHttpServer({ bridge, log: (tag, p) => log('http', { tag, ...(p || {}) }) });
   httpPort = await httpServer.listen();
   log('http', { event: 'listening', port: httpPort });

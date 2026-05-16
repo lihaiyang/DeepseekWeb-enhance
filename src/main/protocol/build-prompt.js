@@ -6,15 +6,82 @@
  * DeepSeek 网页只能接收一条 prompt 文本，没有 messages 数组、没有 tool_calls
  * 字段。这里把标准 OpenAI 请求拼成一段自包含文本：系统提示 + 工具列表 +
  * 消息历史，并约定一种工具调用 / 工具结果的纯文本格式让模型遵循。
+ *
+ * 用户可以覆盖默认的"注入模板"（工具协议规则 + 输出格式硬约束）。模板里用
+ * `{{tools}}` 占位符表示"在此处插入动态生成的工具清单"。
  */
 
 const TOOL_CALL_FENCE_OPEN = '```tool_call';
 const TOOL_CALL_FENCE_CLOSE = '```';
+const TOOLS_PLACEHOLDER = '{{tools}}';
 
-function indent(text, prefix) {
-  if (!text) return '';
-  return text.split('\n').map(function (l) { return prefix + l; }).join('\n');
-}
+// ─── Default injected template ───────────────────────────────────────
+// Order intentionally: tool list first (so the model sees *what* it can
+// call), then the call protocol (so it knows *how* to call), then the
+// output hard rules (so it knows *what not to write*).
+
+const DEFAULT_TEMPLATE = [
+  '{{tools}}',
+  '',
+  '# 工具调用协议（必须严格遵守，否则调用作废）',
+  '',
+  '当你判断需要调用工具时，回答的**最后一部分**必须是一个独立的代码块，格式如下：',
+  '',
+  TOOL_CALL_FENCE_OPEN,
+  '{"name": "工具名", "arguments": {"参数1": "值1", "参数2": "值2"}}',
+  TOOL_CALL_FENCE_CLOSE,
+  '',
+  '## 硬性规则（违反任意一条，调用都会失败）',
+  '',
+  '1. **JSON 顶层必须正好有两个字段：`name` 和 `arguments`**。',
+  '   - `name` 是字符串，等于工具名（见上方"工具清单"）。',
+  '   - `arguments` 是 JSON 对象，包含该工具的所有参数键值对。',
+  '2. **不允许把工具名当作 JSON 顶层键**。',
+  '3. **JSON 必须是合法的、可被 `JSON.parse` 解析的对象**：',
+  '   - 无尾随逗号、无未闭合括号、无多余的 `}` 或 `]`。',
+  '   - 字符串里的换行用 `\\n`，反斜杠用 `\\\\`，引号用 `\\"`。',
+  '4. **代码块的开头必须是单独一行 `' + TOOL_CALL_FENCE_OPEN + '`**，结尾必须是单独一行 ``` （3 个反引号）。',
+  '5. **代码块闭合的 ``` 之后绝对不能有任何字符**（包括空格、换行、解释、确认语）。',
+  '   任何"我已经/接下来"的话都会被截掉、并让本次调用作废。',
+  '6. **一次只发起一个工具调用**。需要多个工具时分多轮进行。',
+  '7. **fence 之前可以写一两句解释**，但不要在 fence 之内/之后写任何说明。',
+  '',
+  '## 正确示例 ✅',
+  '',
+  '我来读一下文件内容。',
+  '',
+  TOOL_CALL_FENCE_OPEN,
+  '{"name": "read", "arguments": {"path": "src/index.js"}}',
+  TOOL_CALL_FENCE_CLOSE,
+  '',
+  '## 错误示例 ❌（千万不要这样写）',
+  '',
+  '错误 1：把工具名当作顶层键。',
+  '',
+  TOOL_CALL_FENCE_OPEN,
+  '{"read": {"path": "src/index.js"}}        ← 错误：缺少 name / arguments',
+  TOOL_CALL_FENCE_CLOSE,
+  '',
+  '错误 2：fence 闭合后还有内容。',
+  '',
+  TOOL_CALL_FENCE_OPEN,
+  '{"name": "read", "arguments": {"path": "src/index.js"}}',
+  TOOL_CALL_FENCE_CLOSE,
+  '好的，我已经发起调用。  ← 错误：fence 后写了字',
+  '',
+  '错误 3：JSON 多了 `}}` 等多余括号、尾随逗号，导致 `JSON.parse` 失败。',
+  '',
+  '# 输出格式硬约束（违反会导致输出被截断）',
+  '',
+  '你的回复只是接在最末尾 `[助手]` 之后的一段助手发言，**绝对不能**输出以下任何分隔符：',
+  '',
+  '- 行首的 `[用户]`、`[助手]`、`[系统]`、`[开发者]`',
+  '- 行首的 `[工具结果` / `[工具结果 id=...]`',
+  '',
+  '这些标签由宿主系统填充，模型生成它们等于伪造历史。一旦检测到，本次回复会在这些标签处被立即截断，截断点之后的所有内容（包括"已完成 / 已创建"之类的确认）都将丢失。',
+].join('\n');
+
+// ─── Helpers ─────────────────────────────────────────────────────────
 
 function summarizeParameters(schema) {
   if (!schema || typeof schema !== 'object') return '';
@@ -33,59 +100,13 @@ function summarizeParameters(schema) {
   return lines.join('\n');
 }
 
-function buildToolSection(tools) {
+/**
+ * Render the OpenAI tools[] array into a markdown "## 工具清单" block.
+ * Returns empty string when there are no tools.
+ */
+function buildToolList(tools) {
   if (!Array.isArray(tools) || tools.length === 0) return '';
-  const parts = [];
-  parts.push('# 工具调用协议（必须严格遵守，否则调用作废）');
-  parts.push('');
-  parts.push('当你判断需要调用工具时，回答的**最后一部分**必须是一个独立的代码块，格式如下：');
-  parts.push('');
-  parts.push(TOOL_CALL_FENCE_OPEN);
-  parts.push('{"name": "工具名", "arguments": {"参数1": "值1", "参数2": "值2"}}');
-  parts.push(TOOL_CALL_FENCE_CLOSE);
-  parts.push('');
-  parts.push('## 硬性规则（违反任意一条，调用都会失败）');
-  parts.push('');
-  parts.push('1. **JSON 顶层必须正好有两个字段：`name` 和 `arguments`**。');
-  parts.push('   - `name` 是字符串，等于工具名（见下方"工具清单"）。');
-  parts.push('   - `arguments` 是 JSON 对象，包含该工具的所有参数键值对。');
-  parts.push('2. **不允许把工具名当作 JSON 顶层键**。');
-  parts.push('3. **JSON 必须是合法的、可被 `JSON.parse` 解析的对象**：');
-  parts.push('   - 无尾随逗号、无未闭合括号、无多余的 `}` 或 `]`。');
-  parts.push('   - 字符串里的换行用 `\\n`，反斜杠用 `\\\\`，引号用 `\\"`。');
-  parts.push('4. **代码块的开头必须是单独一行 `' + TOOL_CALL_FENCE_OPEN + '`**，');
-  parts.push('   结尾必须是单独一行 ``` （3 个反引号）。');
-  parts.push('5. **代码块闭合的 ``` 之后绝对不能有任何字符**（包括空格、换行、解释、确认语）。');
-  parts.push('   任何"我已经/接下来"的话都会被截掉、并让本次调用作废。');
-  parts.push('6. **一次只发起一个工具调用**。需要多个工具时分多轮进行。');
-  parts.push('7. **fence 之前可以写一两句解释**，但不要在 fence 之内/之后写任何说明。');
-  parts.push('');
-  parts.push('## 正确示例 ✅');
-  parts.push('');
-  parts.push('我来读一下文件内容。');
-  parts.push('');
-  parts.push(TOOL_CALL_FENCE_OPEN);
-  parts.push('{"name": "read", "arguments": {"path": "src/index.js"}}');
-  parts.push(TOOL_CALL_FENCE_CLOSE);
-  parts.push('');
-  parts.push('## 错误示例 ❌（千万不要这样写）');
-  parts.push('');
-  parts.push('错误 1：把工具名当作顶层键。');
-  parts.push('');
-  parts.push(TOOL_CALL_FENCE_OPEN);
-  parts.push('{"read": {"path": "src/index.js"}}        ← 错误：缺少 name / arguments');
-  parts.push(TOOL_CALL_FENCE_CLOSE);
-  parts.push('');
-  parts.push('错误 2：fence 闭合后还有内容。');
-  parts.push('');
-  parts.push(TOOL_CALL_FENCE_OPEN);
-  parts.push('{"name": "read", "arguments": {"path": "src/index.js"}}');
-  parts.push(TOOL_CALL_FENCE_CLOSE);
-  parts.push('好的，我已经发起调用。  ← 错误：fence 后写了字');
-  parts.push('');
-  parts.push('错误 3：JSON 多了 `}}` 等多余括号、尾随逗号，导致 `JSON.parse` 失败。');
-  parts.push('');
-  parts.push('## 工具清单');
+  const parts = ['## 工具清单'];
   for (const t of tools) {
     const fn = (t && t.function) || t || {};
     parts.push('');
@@ -98,13 +119,18 @@ function buildToolSection(tools) {
 }
 
 /**
- * Normalise an OpenAI `content` field, which may be:
- *   - a plain string
- *   - an array of parts: { type: "text", text } | { type: "image_url", ... }
- *     | { type: "input_text", text } | { type: "output_text", text }
- *     | plain strings (rare but seen in some clients)
- * Returns a single string.
+ * Substitute `{{tools}}` (and any leading/trailing blank lines around it
+ * when the list is empty) in the user-controlled template.
  */
+function renderTemplate(template, tools) {
+  const toolList = buildToolList(tools);
+  if (toolList) {
+    return template.split(TOOLS_PLACEHOLDER).join(toolList);
+  }
+  // No tools: drop the placeholder cleanly, collapsing surrounding blank lines.
+  return template.replace(/\n*\{\{tools\}\}\n*/g, '\n\n').trim();
+}
+
 function stringifyContent(content) {
   if (content == null) return '';
   if (typeof content === 'string') return content;
@@ -129,9 +155,6 @@ function formatToolCallsInAssistant(message) {
   if (!Array.isArray(message.tool_calls) || message.tool_calls.length === 0) {
     return null;
   }
-  // OpenAI 协议允许 assistant 同时有 content 和 tool_calls，我们把
-  // tool_calls 还原成约定的代码块格式，让模型看到的"历史调用"和它将要
-  // 产生的格式一致。
   const blocks = [];
   for (const tc of message.tool_calls) {
     const fn = (tc && tc.function) || {};
@@ -180,19 +203,21 @@ function formatMessage(message) {
 }
 
 /**
- * 把 OpenAI 兼容的请求体翻译成一条 DeepSeek 网页可发送的 prompt。
- *
  * @param {object} body - OpenAI /v1/chat/completions body
+ * @param {object} [opts]
+ * @param {string} [opts.template] - user-provided override for the injected
+ *   block. Defaults to DEFAULT_TEMPLATE. Supports `{{tools}}` placeholder.
  * @returns {string}
  */
-function buildPrompt(body) {
+function buildPrompt(body, opts) {
   const messages = Array.isArray(body && body.messages) ? body.messages : [];
   const tools = Array.isArray(body && body.tools) ? body.tools : [];
+  const template = (opts && typeof opts.template === 'string' && opts.template.trim())
+    ? opts.template
+    : DEFAULT_TEMPLATE;
 
   const sections = [];
 
-  // 先把 system / developer 消息合并到顶部（DeepSeek 没有专门的 system
-  // 通道，但保留 role 标签让模型知道这是指令而非用户输入）。
   const systemMsgs = [];
   const dialogMsgs = [];
   for (const m of messages) {
@@ -200,28 +225,17 @@ function buildPrompt(body) {
     else dialogMsgs.push(m);
   }
 
+  // 1. pi's own system prompt(s)
   for (const m of systemMsgs) sections.push(formatMessage(m));
 
-  const toolSection = buildToolSection(tools);
-  if (toolSection) sections.push(toolSection);
+  // 2. Injected template (tool list + protocol rules + output hard rules)
+  const injected = renderTemplate(template, tools);
+  if (injected) sections.push(injected);
 
-  // Hard rules about the *format* of the model's reply itself. Without
-  // this, DeepSeek will happily extend the visible "dialog script" by
-  // hallucinating `[工具结果]` + `[助手]` blocks after its tool call.
-  sections.push(
-    '# 输出格式硬约束（违反会导致输出被截断）\n' +
-    '\n' +
-    '你的回复只是接在最末尾 `[助手]` 之后的一段助手发言，**绝对不能**输出以下任何分隔符：\n' +
-    '\n' +
-    '- 行首的 `[用户]`、`[助手]`、`[系统]`、`[开发者]`\n' +
-    '- 行首的 `[工具结果` / `[工具结果 id=...]`\n' +
-    '\n' +
-    '这些标签由宿主系统填充，模型生成它们等于伪造历史。一旦检测到，本次回复会在这些标签处被立即截断，截断点之后的所有内容（包括"已完成 / 已创建"之类的确认）都将丢失。'
-  );
-
+  // 3. Dialog history
   for (const m of dialogMsgs) sections.push(formatMessage(m));
 
-  // 末尾给模型一个明确的"开始回答"标志，让它接着 [助手] 输出。
+  // 4. Generation cue
   sections.push('[助手]');
 
   return sections.filter(Boolean).join('\n\n');
@@ -229,6 +243,10 @@ function buildPrompt(body) {
 
 module.exports = {
   buildPrompt,
+  buildToolList,
+  renderTemplate,
+  DEFAULT_TEMPLATE,
   TOOL_CALL_FENCE_OPEN,
   TOOL_CALL_FENCE_CLOSE,
+  TOOLS_PLACEHOLDER,
 };

@@ -12,6 +12,12 @@
     return;
   }
 
+  // Apply platform class so CSS can adjust header padding around the
+  // native window controls (macOS traffic lights vs Win/Linux overlay).
+  if (dsAgent.platform) {
+    document.body.classList.add('platform-' + dsAgent.platform);
+  }
+
   // ── xterm bootstrap ─────────────────────────────────────────────
   const Terminal = window.Terminal;
   const FitAddon = window.FitAddon && window.FitAddon.FitAddon;
@@ -115,8 +121,7 @@
   const btnDs = document.getElementById('btn-deepseek');
   let deepseekVisible = false;
   function applyDsButton() {
-    btnDs.textContent = deepseekVisible ? '返回终端' : '显示 DeepSeek';
-    btnDs.classList.toggle('active', deepseekVisible);
+    btnDs.textContent = deepseekVisible ? '显示终端' : '显示网页';
   }
   applyDsButton();
   // Sync initial state from main (main may have shown the view before this
@@ -156,6 +161,12 @@
       setStatus('pi 已重启');
     }).catch((err) => setStatus('重启失败: ' + (err && err.message || err), 'err'));
   });
+
+  if (dsAgent.prompt && dsAgent.prompt.openEditor) {
+    document.getElementById('btn-prompt').addEventListener('click', () => {
+      dsAgent.prompt.openEditor();
+    });
+  }
 
   // ── kick off ────────────────────────────────────────────────────
   startPi();

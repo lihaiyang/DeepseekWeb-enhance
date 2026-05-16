@@ -6,6 +6,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('dsAgent', {
+  platform: process.platform,
   pty: {
     start:   ()           => ipcRenderer.invoke('pty:start'),
     restart: ()           => ipcRenderer.invoke('pty:restart'),
@@ -24,5 +25,8 @@ contextBridge.exposeInMainWorld('dsAgent', {
     get:       () => ipcRenderer.invoke('workspace:get'),
     choose:    () => ipcRenderer.invoke('workspace:choose'),
     onChanged: (cb) => ipcRenderer.on('workspace:changed', (_e, cwd) => cb(cwd)),
+  },
+  prompt: {
+    openEditor: () => ipcRenderer.send('prompt:open-editor'),
   },
 });

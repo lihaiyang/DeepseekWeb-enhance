@@ -285,6 +285,35 @@ function check(name, cond, info) {
   check('inline marker preserved', deltaContent(chunks).indexOf('[助手]') !== -1);
 }
 
+// 18. Custom prompt template substitutes {{tools}} with the rendered tool
+// list and replaces the default block entirely.
+{
+  const prompt = buildPrompt({
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: [{ type: 'function', function: { name: 'echo', description: 'd', parameters: { type: 'object', properties: { msg: { type: 'string' } }, required: ['msg'] } } }],
+  }, {
+    template: 'MY CUSTOM HEADER\n\n{{tools}}\n\nMY CUSTOM FOOTER',
+  });
+  check('custom template: header kept', prompt.indexOf('MY CUSTOM HEADER') !== -1);
+  check('custom template: footer kept', prompt.indexOf('MY CUSTOM FOOTER') !== -1);
+  check('custom template: tools substituted', prompt.indexOf('### echo') !== -1);
+  check('custom template: default block absent', prompt.indexOf('硬性规则') === -1);
+}
+
+// 19. Empty tools[] with template using {{tools}}: placeholder collapses
+// gracefully, no double blank lines.
+{
+  const prompt = buildPrompt({
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: [],
+  }, {
+    template: 'top\n\n{{tools}}\n\nbottom',
+  });
+  check('empty tools: placeholder dropped', prompt.indexOf('{{tools}}') === -1);
+  check('empty tools: top kept', prompt.indexOf('top') !== -1);
+  check('empty tools: bottom kept', prompt.indexOf('bottom') !== -1);
+}
+
 console.log('');
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exit(fail === 0 ? 0 : 1);

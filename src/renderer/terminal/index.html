@@ -12,9 +12,13 @@
     #root { display: flex; flex-direction: column; height: 100vh; }
     header {
       display: flex; align-items: center; gap: 12px;
-      padding: 6px 12px; background: #16161a;
+      padding: 6px 152px 6px 12px;        /* right pad: Win/Linux native window buttons */
+      background: #16161a;
       border-bottom: 1px solid #26262b;
       -webkit-app-region: drag;
+    }
+    body.platform-darwin header {
+      padding: 6px 12px 6px 80px;         /* macOS: traffic lights on left */
     }
     header .title { font-weight: 600; letter-spacing: 0.3px; opacity: 0.9; }
     header .spacer { flex: 1; }
@@ -54,7 +58,8 @@
         <span class="folder-ico">📁</span><span id="workspace-label">~</span>
       </button>
       <span class="spacer"></span>
-      <button id="btn-deepseek" title="显示/隐藏 DeepSeek 网页 (Ctrl+Shift+D)">显示 DeepSeek</button>
+      <button id="btn-prompt"   title="编辑注入提示词">提示词</button>
+      <button id="btn-deepseek" title="显示/隐藏 DeepSeek 网页 (Ctrl+Shift+D)">显示网页</button>
       <button id="btn-restart"  title="重启 pi 进程">重启 pi</button>
     </header>
     <div id="term-host"><div id="term"></div></div>
