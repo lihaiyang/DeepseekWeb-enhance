@@ -114,7 +114,7 @@ log(`  Targets: ${[
 log('');
 
 // ─── Step 1: Check Prerequisites ──────────────────────────────
-logStep('1/5', 'Checking prerequisites');
+logStep('1/6', 'Checking prerequisites');
 
 // Check Node.js
 const nodeVersion = process.version;
@@ -145,7 +145,7 @@ if (!fs.existsSync(builderPath)) {
 logSuccess('electron-builder found');
 
 // ─── Step 2: Generate Icons ───────────────────────────────────
-logStep('2/5', 'Preparing app icons');
+logStep('2/6', 'Preparing app icons');
 
 const requiredIcons = {
   png: path.join(ASSETS_DIR, 'icon.png'),
@@ -210,7 +210,7 @@ if (!fs.existsSync(requiredIcons.icns)) {
 }
 
 // ─── Step 3: Clean Previous Build ─────────────────────────────
-logStep('3/5', 'Cleaning previous build');
+logStep('3/6', 'Cleaning previous build');
 
 if (fs.existsSync(DIST_DIR)) {
   // Keep the dist directory but remove old artifacts
@@ -229,8 +229,44 @@ if (fs.existsSync(DIST_DIR)) {
   logSuccess('Created dist directory');
 }
 
-// ─── Step 4: Build ────────────────────────────────────────────
-logStep('4/5', 'Building application');
+// ─── Step 4: Fetch Node binaries to bundle ────────────────────
+logStep('4/6', 'Fetching Node binaries for target platforms');
+
+function nodeFetchTargets() {
+  const out = [];
+  const pickArches = (osBlock) => {
+    const targets = (osBlock && osBlock.target) || [];
+    const arches = [];
+    for (const t of targets) {
+      const a = Array.isArray(t.arch) ? t.arch : (t.arch ? [t.arch] : ['x64']);
+      arches.push(...a);
+    }
+    return arches.length ? arches : ['x64'];
+  };
+  if (buildWin)   for (const a of pickArches(PACKAGE_JSON.build.win))   out.push('win-' + a);
+  if (buildMac)   for (const a of pickArches(PACKAGE_JSON.build.mac))   out.push('darwin-' + a);
+  if (buildLinux) for (const a of pickArches(PACKAGE_JSON.build.linux)) out.push('linux-' + a);
+  return Array.from(new Set(out));
+}
+
+const fetchTargets = nodeFetchTargets();
+log(`  Targets: ${fetchTargets.join(', ')}`);
+const fetchScript = path.join(PROJECT_DIR, 'scripts', 'fetch-node.js');
+const fetchArgs = fetchTargets.flatMap((t) => ['--target', t]);
+const fetchResult = spawnSync(process.execPath, [fetchScript, ...fetchArgs], {
+  cwd: PROJECT_DIR,
+  stdio: 'inherit',
+});
+if (fetchResult.status !== 0) {
+  logError('fetch-node failed (exit code ' + fetchResult.status + ')');
+  logError('If your network needs a proxy, re-run build with HTTPS_PROXY set, e.g.:');
+  logError('  HTTPS_PROXY=http://127.0.0.1:7890 node scripts/build.js');
+  process.exit(1);
+}
+logSuccess('Node binaries ready');
+
+// ─── Step 5: Build ────────────────────────────────────────────
+logStep('5/6', 'Building application');
 
 const buildTargets = [];
 if (buildMac) buildTargets.push('--mac');
@@ -245,8 +281,8 @@ run(buildCmd);
 const buildTime = ((Date.now() - buildStart) / 1000).toFixed(1);
 logSuccess(`Build completed in ${buildTime}s`);
 
-// ─── Step 5: Summary ──────────────────────────────────────────
-logStep('5/5', 'Build summary');
+// ─── Step 6: Summary ──────────────────────────────────────────
+logStep('6/6', 'Build summary');
 
 if (fs.existsSync(DIST_DIR)) {
   const entries = fs.readdirSync(DIST_DIR);

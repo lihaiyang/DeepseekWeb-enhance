@@ -48,12 +48,43 @@ function ptyHostScriptPath() {
  * Spawning pi via a real Node binary avoids the Electron stdin wrapper
  * and isTTY behaves correctly.
  *
- * Falls back to Electron-as-Node when no real Node is on PATH (with a
- * console warning — the user will likely have to install Node).
+ * Resolution order:
+ *   1. Bundled Node shipped alongside the app
+ *      - packaged: <resourcesPath>/node/node[.exe]
+ *      - dev:      <project>/vendor/node/<platform-key>/node[.exe]
+ *   2. Real `node` found on PATH
+ *   3. Last resort: Electron-as-Node (with a warning — pi may exit immediately)
  */
+function bundledNodePath() {
+  const isWin = process.platform === 'win32';
+  const exe = isWin ? 'node.exe' : 'node';
+  // 1a. Packaged location — extraResources puts vendor/node/<key>/* under
+  //     resources/node/.
+  const resources = process.resourcesPath;
+  if (resources) {
+    const p = path.join(resources, 'node', exe);
+    if (fs.existsSync(p)) return p;
+  }
+  // 1b. Dev mode — vendor/node/<platform-key>/node[.exe] populated by
+  //     scripts/fetch-node.js.
+  const platformKey =
+    process.platform === 'win32'  ? 'win-' + process.arch :
+    process.platform === 'darwin' ? 'darwin-' + process.arch :
+    process.platform === 'linux'  ? 'linux-' + process.arch :
+    null;
+  if (platformKey) {
+    const p = path.join(__dirname, '..', '..', 'vendor', 'node', platformKey, exe);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
 function resolveNodeBinary() {
   const isWin = process.platform === 'win32';
-  // Try a few well-known locations first, then PATH lookup.
+  // 1. Bundled Node (preferred — ships with the app, zero user setup)
+  const bundled = bundledNodePath();
+  if (bundled) return { bin: bundled, useElectronAsNode: false };
+  // 2. Real Node on PATH.
   const envPaths = (process.env.PATH || '').split(isWin ? ';' : ':');
   const candidates = [];
   for (const dir of envPaths) {
@@ -67,7 +98,7 @@ function resolveNodeBinary() {
       }
     } catch (_) {}
   }
-  // Final attempt: shell-based which/where (handles PATHEXT etc. on Windows).
+  // Shell-based which/where (handles PATHEXT etc. on Windows).
   try {
     const { spawnSync } = require('child_process');
     const r = spawnSync(isWin ? 'where' : 'which', ['node'], {
@@ -81,7 +112,8 @@ function resolveNodeBinary() {
       }
     }
   } catch (_) {}
-  console.warn('[pi-runner] real Node not found on PATH; falling back to Electron-as-Node — pi may exit immediately due to isTTY=false');
+  // 3. Last resort: Electron-as-Node.
+  console.warn('[pi-runner] no bundled Node and real Node not found on PATH; falling back to Electron-as-Node — pi may exit immediately due to isTTY=false');
   return { bin: process.execPath, useElectronAsNode: true };
 }
 

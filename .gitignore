@@ -17,6 +17,9 @@ dist/
 out/
 *.log
 
+# Bundled Node binaries (downloaded by scripts/fetch-node.js)
+vendor/*
+
 # Python (legacy)
 __pycache__/
 *.pyc

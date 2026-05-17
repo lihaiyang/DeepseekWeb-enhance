@@ -63,7 +63,14 @@
         }
       ],
       "category": "public.app-category.productivity",
-      "icon": "assets/icon.icns"
+      "icon": "assets/icon.icns",
+      "extraResources": [
+        {
+          "from": "vendor/node/darwin-${arch}/",
+          "to": "node/",
+          "filter": ["node"]
+        }
+      ]
     },
     "win": {
       "target": [
@@ -74,7 +81,14 @@
           ]
         }
       ],
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "extraResources": [
+        {
+          "from": "vendor/node/win-${arch}/",
+          "to": "node/",
+          "filter": ["node.exe"]
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -93,7 +107,14 @@
         }
       ],
       "category": "Utility",
-      "icon": "assets/icon.png"
+      "icon": "assets/icon.png",
+      "extraResources": [
+        {
+          "from": "vendor/node/linux-${arch}/",
+          "to": "node/",
+          "filter": ["node"]
+        }
+      ]
     }
   }
 }
