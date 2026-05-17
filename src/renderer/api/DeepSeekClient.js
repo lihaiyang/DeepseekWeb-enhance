@@ -2,8 +2,9 @@
  * DeepSeekClient — DeepSeek 网页操作的"API 风格"封装。
  *
  * 唯一职责：把一段纯 prompt 文本注入聊天页面、等待流式响应、把 thinking /
- * content 增量回调出去。每次 sendRaw 都先点"开启新会话"，确保请求是
- * self-contained 的。
+ * content 增量回调出去。每次 sendRaw 都先点"开启新会话"，再确保"专家模式"
+ * 处于选中、"智能搜索"处于关闭，最后才注入 prompt，确保请求是 self-contained
+ * 的。
  *
  * Injected into the MAIN WORLD by preload.
  *
@@ -155,6 +156,107 @@
     });
   }
 
+  // ─── Expert mode & web search toggles ──────────────────────
+  // Each new session: make sure 专家模式 is on, 智能搜索 is off. Both
+  // operations are idempotent — they detect current state first and only
+  // click when a toggle is actually needed.
+
+  function _hasActiveMarker(node) {
+    var cls = (node.className || '').toString();
+    var ariaP = node.getAttribute('aria-pressed');
+    var ariaS = node.getAttribute('aria-selected');
+    var ariaC = node.getAttribute('aria-checked');
+    var dataState = node.getAttribute('data-state');
+    return (
+      cls.indexOf('active') !== -1 || cls.indexOf('selected') !== -1 ||
+      cls.indexOf('current') !== -1 || cls.indexOf('checked') !== -1 ||
+      cls.indexOf('--on') !== -1 || cls.indexOf('--enabled') !== -1 ||
+      ariaP === 'true' || ariaS === 'true' || ariaC === 'true' ||
+      dataState === 'on' || dataState === 'checked' || dataState === 'active'
+    );
+  }
+
+  function _findLabelEl(label) {
+    var allEls = document.querySelectorAll('*');
+    for (var i = 0; i < allEls.length; i++) {
+      var el = allEls[i];
+      var text = (el.textContent || '').trim();
+      if (text === label) return el;
+    }
+    return null;
+  }
+
+  function _selectExpertMode() {
+    return new Promise(function (resolve) {
+      var el = _findLabelEl('专家模式');
+      if (!el) {
+        _log('WARN', 'expertMode: button not found');
+        resolve();
+        return;
+      }
+      // Already selected? Walk up the ancestor chain looking for an active marker.
+      var node = el;
+      while (node && node !== document.body) {
+        if (_hasActiveMarker(node)) {
+          _log('INFO', 'expertMode: already selected');
+          resolve();
+          return;
+        }
+        node = node.parentElement;
+      }
+      el.click();
+      _log('INFO', 'expertMode: clicked');
+      // Give DeepSeek's UI a beat to rerender before we touch 智能搜索 next.
+      setTimeout(resolve, 300);
+    });
+  }
+
+  function _disableWebSearch() {
+    return new Promise(function (resolve) {
+      var el = _findLabelEl('智能搜索');
+      if (!el) {
+        _log('WARN', 'webSearch: button not found');
+        resolve();
+        return;
+      }
+      // Walk up from the label span to the actual clickable toggle container.
+      var toggle = el;
+      while (toggle && toggle !== document.body) {
+        var tag = toggle.tagName.toLowerCase();
+        var role = toggle.getAttribute('role');
+        var cls = (toggle.className || '').toString();
+        if (tag === 'button' || tag === 'label' ||
+            role === 'button' || role === 'switch' || role === 'checkbox' ||
+            cls.indexOf('toggle') !== -1 || cls.indexOf('switch') !== -1 ||
+            getComputedStyle(toggle).cursor === 'pointer') {
+          break;
+        }
+        toggle = toggle.parentElement;
+      }
+      var target = (toggle && toggle !== document.body) ? toggle : el;
+
+      // Is it currently ON? Scan target + ancestors for an active marker.
+      var isOn = false;
+      var node = target;
+      while (node && node !== document.body) {
+        if (_hasActiveMarker(node)) { isOn = true; break; }
+        node = node.parentElement;
+      }
+
+      if (isOn) {
+        target.click();
+        _log('INFO', 'webSearch: disabled');
+      } else {
+        _log('INFO', 'webSearch: already off');
+      }
+      resolve();
+    });
+  }
+
+  function _ensureExpertModeAndNoSearch() {
+    return _selectExpertMode().then(_disableWebSearch);
+  }
+
   /**
    * Send a raw prompt string to DeepSeek and resolve with the full response.
    * Streams thinking / content via onThinking / onContent in the meantime.
@@ -187,7 +289,7 @@
 
     this._takeoverAdapterCallbacks(adapter);
 
-    return _clickNewChatButton().then(function () {
+    return _clickNewChatButton().then(_ensureExpertModeAndNoSearch).then(function () {
       return new Promise(function (resolve, reject) {
         var settled = false;
         function settle(err, result) {

@@ -8,10 +8,18 @@
  *  - 把请求 dispatch 到 DeepSeek webview（main world 里的 DeepSeekClient）
  *  - 串行队列：DeepSeek 页面同时只能有一个 in-flight 请求
  *  - 接收 renderer 回来的 thinking/content 增量，喂给 stream translator
- *  - 翻译后的 OpenAI chunk 先 buffer 起来，整个回合结束后才 flush 给 pi
- *    这样我们可以在"模型只思考没回答"的异常情形下静默重试，pi 看不到中
- *    间过程
- *  - 翻译后的 OpenAI chunk 通过 onChunk 回调送出
+ *  - 翻译后的 OpenAI chunk 立刻通过 onChunk 回调直通给 pi，不做缓冲
+ *
+ * 失败处理：
+ *  - 本层不做自动重试。任何失败（DeepSeek 报错、空响应、流卡死）都按
+ *    OpenAI 兼容流的形态收尾（content delta 注入错误说明 + finish_reason
+ *    'stop' + [DONE]），由调用方（pi 客户端）自行决定是否重试，对齐主线
+ *    OpenAI SDK 行为。
+ *
+ * 卡死检测（stall watchdog）：
+ *  - 从首个 thinking/content chunk 开始计时，每收到任意 incoming（包括
+ *    end/error）就 reset；超时阈值默认 5s
+ *  - 触发时把"模型响应超时"错误塞进流尾部，并通知 renderer 放弃这次请求
  *
  * 与 renderer 的 IPC 协议：
  *   main → renderer:  channel "llm:run"     payload { requestId, prompt }
@@ -26,20 +34,19 @@ const { ipcMain } = require('electron');
 const { buildPrompt } = require('./protocol/build-prompt');
 const { createTranslator } = require('./protocol/parse-stream');
 
-const MAX_ATTEMPTS = 3;            // total tries per request (1 + 2 retries)
-const RETRY_DELAY_MS = 500;        // back-off before re-issuing to DeepSeek
+const STALL_TIMEOUT_MS = 5000;       // 流卡死阈值：相邻 chunk 间隔超过此值即视为失败
+const STALL_MESSAGE = '模型响应超时（5s 无新内容），本次回复中断';
 
 class LlmBridge {
   constructor(opts) {
     this._webContents = null;
     this._counter = 0;
-    this._pending = new Map();      // requestId → in-flight attempt state
+    this._pending = new Map();      // requestId → in-flight state
     this._queue = [];               // FIFO of dispatch functions waiting for the page
     this._busy = false;
     this._getTemplate = (opts && typeof opts.getTemplate === 'function') ? opts.getTemplate : null;
     this._log = (opts && typeof opts.log === 'function') ? opts.log : null;
-    this._maxAttempts = (opts && Number.isFinite(opts.maxAttempts)) ? opts.maxAttempts : MAX_ATTEMPTS;
-    this._retryDelayMs = (opts && Number.isFinite(opts.retryDelayMs)) ? opts.retryDelayMs : RETRY_DELAY_MS;
+    this._stallTimeoutMs = (opts && Number.isFinite(opts.stallTimeoutMs)) ? opts.stallTimeoutMs : STALL_TIMEOUT_MS;
 
     ipcMain.on('llm:thinking', (_e, payload) => this._onIncoming('thinking', payload));
     ipcMain.on('llm:content',  (_e, payload) => this._onIncoming('content', payload));
@@ -60,7 +67,7 @@ class LlmBridge {
    *
    * @param {object} opts
    * @param {object} opts.body      - OpenAI request body (messages, tools, ...)
-   * @param {function} opts.onChunk - called with each translated OpenAI chunk
+   * @param {function} opts.onChunk - called with each translated OpenAI chunk (live, as they arrive)
    * @param {AbortSignal} [opts.signal]
    * @returns {Promise<void>} resolves when stream is fully drained.
    */
@@ -113,7 +120,6 @@ class LlmBridge {
 
     const model = body.model || 'deepseek-via-web';
 
-    // Per-request top-level handle. attempt-specific state lives in _pending.
     const handle = {
       requestId,
       resolve,
@@ -138,21 +144,19 @@ class LlmBridge {
       }
     }
 
-    this._launchAttempt(handle, 0);
+    this._launch(handle);
   }
 
   /**
-   * Issue one attempt of the request to the DeepSeek webview. The attempt's
-   * chunks are accumulated in `state.collected` until end/error, then
-   * `_finalizeAttempt` decides whether to retry or flush to the caller.
+   * Issue the request to the DeepSeek webview. Translator output streams
+   * straight to `handle.onChunk`; no per-attempt buffer, no retry.
    */
-  _launchAttempt(handle, attempt) {
+  _launch(handle) {
     if (handle.aborted) {
       this._finishRequest(handle, handle.reject, new Error('aborted'));
       return;
     }
 
-    const collected = [];
     let contentLen = 0;
     let toolCallsLen = 0;
     let reasoningLen = 0;
@@ -160,10 +164,9 @@ class LlmBridge {
     let errorMessage = null;
 
     const translator = createTranslator({
-      id: 'chatcmpl-' + handle.requestId + (attempt > 0 ? '-r' + attempt : ''),
+      id: 'chatcmpl-' + handle.requestId,
       model: handle.model,
       emit: (chunk) => {
-        collected.push(chunk);
         const choice = chunk.choices && chunk.choices[0];
         const d = choice && choice.delta;
         if (d) {
@@ -175,59 +178,63 @@ class LlmBridge {
             }
           }
         }
+        if (!handle.aborted) {
+          try { handle.onChunk(chunk); } catch (_) {}
+        }
       },
     });
 
     const state = {
       handle,
-      attempt,
       translator,
-      collected,
       counters: () => ({ contentLen, toolCallsLen, reasoningLen, hadError, errorMessage }),
       markError: (msg) => { hadError = true; errorMessage = msg; },
       finalized: false,
+      stallTimer: null,
     };
     this._pending.set(handle.requestId, state);
 
     this._logEvent('llm:attempt', {
       requestId: handle.requestId,
-      attempt,
       promptLen: handle.prompt.length,
     });
     this._webContents.send('llm:run', { requestId: handle.requestId, prompt: handle.prompt });
   }
 
+  _armStallTimer(state) {
+    this._clearStallTimer(state);
+    if (this._stallTimeoutMs <= 0) return;
+    state.stallTimer = setTimeout(() => this._onStall(state), this._stallTimeoutMs);
+  }
+
+  _clearStallTimer(state) {
+    if (state.stallTimer) {
+      clearTimeout(state.stallTimer);
+      state.stallTimer = null;
+    }
+  }
+
+  _onStall(state) {
+    state.stallTimer = null;
+    if (state.finalized) return;
+    state.markError('stalled');
+    try { state.translator.fail(STALL_MESSAGE); } catch (_) {}
+    this._sendAbort(state.handle.requestId);
+    this._finalizeAttempt(state);
+  }
+
   _finalizeAttempt(state) {
     if (state.finalized) return;
     state.finalized = true;
+    this._clearStallTimer(state);
     this._pending.delete(state.handle.requestId);
 
     const { contentLen, toolCallsLen, reasoningLen, hadError, errorMessage } = state.counters();
-    const empty = contentLen === 0 && toolCallsLen === 0;
-    const nextAttempt = state.attempt + 1;
-    const canRetry = nextAttempt < this._maxAttempts && !state.handle.aborted;
-
-    // Retry conditions: stream errored, or model produced no content + no
-    // tool calls (typical "thought, then bailed" behaviour).
-    const wantRetry = canRetry && (hadError || empty);
-
     this._logEvent('llm:attempt-done', {
       requestId: state.handle.requestId,
-      attempt: state.attempt,
       contentLen, toolCallsLen, reasoningLen,
       hadError, errorMessage,
-      retrying: wantRetry,
     });
-
-    if (wantRetry) {
-      setTimeout(() => this._launchAttempt(state.handle, nextAttempt), this._retryDelayMs);
-      return;
-    }
-
-    // Flush the (winning) attempt's chunks to the caller.
-    for (const chunk of state.collected) {
-      try { state.handle.onChunk(chunk); } catch (_) {}
-    }
 
     if (state.handle.aborted) {
       this._finishRequest(state.handle, state.handle.reject, new Error('aborted'));
@@ -243,8 +250,10 @@ class LlmBridge {
     try {
       if (kind === 'thinking') {
         if (!state.handle.aborted) state.translator.pushReasoning(payload.delta || '');
+        this._armStallTimer(state);
       } else if (kind === 'content') {
         if (!state.handle.aborted) state.translator.pushContent(payload.delta || '');
+        this._armStallTimer(state);
       } else if (kind === 'end') {
         state.translator.end();
         this._finalizeAttempt(state);
@@ -254,7 +263,6 @@ class LlmBridge {
         this._finalizeAttempt(state);
       }
     } catch (err) {
-      // Translator threw — count as error attempt and try again if we can.
       state.markError(err.message);
       try { state.translator.fail(err.message); } catch (_) {}
       this._finalizeAttempt(state);

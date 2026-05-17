@@ -1,8 +1,8 @@
 'use strict';
 
 /**
- * Unit tests for LlmBridge retry behaviour. We stub electron's `ipcMain`
- * via Module.prototype.require interception so the bridge thinks it's
+ * Unit tests for LlmBridge. We stub electron's `ipcMain` via
+ * Module.prototype.require interception so the bridge thinks it's
  * running in main.
  */
 
@@ -33,9 +33,9 @@ function check(name, cond, info) {
   else { fail++; console.log('  FAIL  ' + name + (info ? ' — ' + info : '')); }
 }
 
-function makeBridge() {
+function makeBridge(opts) {
   const sent = [];
-  const bridge = new LlmBridge({ maxAttempts: 3, retryDelayMs: 5 });
+  const bridge = new LlmBridge(opts || {});
   bridge.attach({
     isDestroyed: () => false,
     send: (channel, payload) => sent.push({ channel, payload }),
@@ -69,7 +69,31 @@ function toolCallNames(chunks) {
 }
 
 (async () => {
-  // 1. Normal happy path: content arrives, no retry.
+  // 1. Happy path — content arrives live (before end), no retry.
+  {
+    const { bridge, sent } = makeBridge();
+    const collected = [];
+    let contentBeforeEnd = '';
+    const p = bridge.request({
+      body: { messages: [{ role: 'user', content: 'hi' }] },
+      onChunk: (c) => collected.push(c),
+    });
+    await sleep(10);
+    const rid = sent[0].payload.requestId;
+    ipcMainStub.emit('llm:content', { requestId: rid, delta: '答案是 42' });
+    // Snapshot what pi has seen BEFORE we send `end`.
+    contentBeforeEnd = deltaContent(collected);
+    ipcMainStub.emit('llm:end', { requestId: rid });
+    await p;
+    check('happy: single attempt', sent.length === 1);
+    check('happy: content streamed live (visible before end)', contentBeforeEnd === '答案是 42',
+      'saw "' + contentBeforeEnd + '" before end');
+    check('happy: full content reaches user', deltaContent(collected) === '答案是 42');
+    check('happy: finish_reason stop', finishReason(collected) === 'stop');
+  }
+
+  // 2. Thinking-only then end — no retry; pi gets clean stop and decides
+  // for itself whether to retry.
   {
     const { bridge, sent } = makeBridge();
     const collected = [];
@@ -79,85 +103,87 @@ function toolCallNames(chunks) {
     });
     await sleep(10);
     const rid = sent[0].payload.requestId;
-    ipcMainStub.emit('llm:content', { requestId: rid, delta: '答案是 42' });
+    ipcMainStub.emit('llm:thinking', { requestId: rid, delta: '想啊想' });
     ipcMainStub.emit('llm:end', { requestId: rid });
     await p;
-    check('happy: single attempt', sent.length === 1);
-    check('happy: content reaches user', deltaContent(collected) === '答案是 42');
-    check('happy: finish_reason stop', finishReason(collected) === 'stop');
+    check('thinking-only: single attempt (no auto-retry)', sent.length === 1);
+    check('thinking-only: reasoning visible', deltaReasoning(collected) === '想啊想');
+    check('thinking-only: content empty', deltaContent(collected) === '');
+    check('thinking-only: finish_reason stop', finishReason(collected) === 'stop');
   }
 
-  // 2. Thinking-only then end → must retry and second attempt's content
-  // is what reaches the caller; first attempt's reasoning is suppressed.
+  // 3. Stream error mid-content — partial content already flowed; the
+  // error gets surfaced inline; no retry.
   {
     const { bridge, sent } = makeBridge();
+    const collected = [];
+    let contentBeforeError = '';
+    const p = bridge.request({
+      body: { messages: [{ role: 'user', content: 'hi' }] },
+      onChunk: (c) => collected.push(c),
+    });
+    await sleep(10);
+    const rid = sent[0].payload.requestId;
+    ipcMainStub.emit('llm:content', { requestId: rid, delta: 'partial' });
+    contentBeforeError = deltaContent(collected);
+    ipcMainStub.emit('llm:error', { requestId: rid, message: 'network blip' });
+    await p;
+    check('error: single attempt (no auto-retry)', sent.length === 1);
+    check('error: partial content streamed before error', contentBeforeError === 'partial');
+    check('error: error appended to content',
+      /\[stream error: network blip\]/.test(deltaContent(collected)));
+    check('error: finish_reason stop', finishReason(collected) === 'stop');
+  }
+
+  // 4. Stall detection — first chunk arrives, then renderer goes silent;
+  // bridge fires the stall timer, surfaces a Chinese error, and aborts.
+  {
+    const { bridge, sent } = makeBridge({ stallTimeoutMs: 50 });
     const collected = [];
     const p = bridge.request({
       body: { messages: [{ role: 'user', content: 'hi' }] },
       onChunk: (c) => collected.push(c),
     });
     await sleep(10);
-    const rid1 = sent[0].payload.requestId;
-    ipcMainStub.emit('llm:thinking', { requestId: rid1, delta: '想啊想' });
-    ipcMainStub.emit('llm:end', { requestId: rid1 });
-
-    // wait for retry
-    await sleep(30);
-    check('retry: second attempt issued', sent.length === 2);
-    const rid2 = sent[1].payload.requestId;
-    check('retry: retry uses same requestId', rid1 === rid2);
-    ipcMainStub.emit('llm:thinking', { requestId: rid2, delta: '再想' });
-    ipcMainStub.emit('llm:content', { requestId: rid2, delta: 'OK 答案' });
-    ipcMainStub.emit('llm:end', { requestId: rid2 });
+    const rid = sent[0].payload.requestId;
+    ipcMainStub.emit('llm:content', { requestId: rid, delta: '开始回答' });
+    // Now stay quiet — let the watchdog fire.
     await p;
-    check('retry: only second attempt content visible', deltaContent(collected) === 'OK 答案');
-    check('retry: first reasoning dropped', deltaReasoning(collected) === '再想');
-    check('retry: finish_reason stop', finishReason(collected) === 'stop');
+    check('stall: single attempt', sent.filter((s) => s.channel === 'llm:run').length === 1);
+    check('stall: live content kept', /开始回答/.test(deltaContent(collected)));
+    check('stall: chinese timeout message appended',
+      /模型响应超时/.test(deltaContent(collected)));
+    check('stall: finish_reason stop', finishReason(collected) === 'stop');
+    check('stall: renderer notified to abort',
+      sent.some((s) => s.channel === 'llm:abort' && s.payload.requestId === rid));
   }
 
-  // 3. Stream error then success.
+  // 5. Stall timer resets on each chunk — slow but steady stream should
+  // not trip the watchdog.
   {
-    const { bridge, sent } = makeBridge();
+    const { bridge, sent } = makeBridge({ stallTimeoutMs: 80 });
     const collected = [];
     const p = bridge.request({
       body: { messages: [{ role: 'user', content: 'hi' }] },
       onChunk: (c) => collected.push(c),
     });
     await sleep(10);
-    const rid1 = sent[0].payload.requestId;
-    ipcMainStub.emit('llm:content', { requestId: rid1, delta: 'partial' });
-    ipcMainStub.emit('llm:error', { requestId: rid1, message: 'network blip' });
-
-    await sleep(30);
-    check('error retry: second attempt issued', sent.length === 2);
-    const rid2 = sent[1].payload.requestId;
-    ipcMainStub.emit('llm:content', { requestId: rid2, delta: 'recovered ok' });
-    ipcMainStub.emit('llm:end', { requestId: rid2 });
-    await p;
-    check('error retry: caller sees recovery only', deltaContent(collected) === 'recovered ok');
-  }
-
-  // 4. All attempts empty — must give up after MAX_ATTEMPTS and resolve
-  // (not hang).
-  {
-    const { bridge, sent } = makeBridge();
-    const collected = [];
-    const p = bridge.request({
-      body: { messages: [{ role: 'user', content: 'hi' }] },
-      onChunk: (c) => collected.push(c),
-    });
-    for (let i = 0; i < 3; i++) {
-      await sleep(15);
-      const rid = sent[i].payload.requestId;
-      ipcMainStub.emit('llm:thinking', { requestId: rid, delta: '想' });
-      ipcMainStub.emit('llm:end', { requestId: rid });
+    const rid = sent[0].payload.requestId;
+    for (let i = 0; i < 5; i++) {
+      ipcMainStub.emit('llm:content', { requestId: rid, delta: 'tick ' });
+      await sleep(40); // < stallTimeoutMs, so timer should keep resetting
     }
+    ipcMainStub.emit('llm:end', { requestId: rid });
     await p;
-    check('exhausted retries: 3 attempts', sent.length === 3);
-    check('exhausted retries: resolves with finish_reason', finishReason(collected) === 'stop');
+    check('slow stream: not flagged as stall',
+      !/模型响应超时/.test(deltaContent(collected)));
+    check('slow stream: all ticks delivered',
+      deltaContent(collected) === 'tick tick tick tick tick ');
+    check('slow stream: finish_reason stop', finishReason(collected) === 'stop');
   }
 
-  // 5. Tool call counts as "non-empty" — no retry triggered.
+  // 6. Tool call counts as content — finish_reason flips to tool_calls,
+  // streamed live as the fence closes.
   {
     const { bridge, sent } = makeBridge();
     const collected = [];
@@ -170,7 +196,7 @@ function toolCallNames(chunks) {
     ipcMainStub.emit('llm:content', { requestId: rid, delta: '```tool_call\n{"name":"ls","arguments":{}}\n```' });
     ipcMainStub.emit('llm:end', { requestId: rid });
     await p;
-    check('tool only: no retry', sent.length === 1);
+    check('tool only: single attempt', sent.length === 1);
     check('tool only: tool emitted', toolCallNames(collected).indexOf('ls') !== -1);
     check('tool only: finish_reason tool_calls', finishReason(collected) === 'tool_calls');
   }
