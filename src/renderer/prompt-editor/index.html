@@ -59,8 +59,10 @@
       <span id="status-badge" class="badge default">使用默认</span>
     </header>
     <div class="desc">
-      此处内容会作为<strong>注入段</strong>插入到 pi 的 system prompt 之后、对话历史之前。<br>
-      使用 <code>{{tools}}</code> 占位符表示"在此处插入由 pi 提供的工具清单（带参数 schema）"。
+      此处内容会作为<strong>注入段</strong>插入到对话历史之前。模板支持三个占位符：<br>
+      <code>{{system}}</code>：在此处插入 pi 自带的 system prompt（出现该占位符时，pi 的 system 不再自动前置，由你决定它的位置；缺省时为兼容旧行为会被自动拼到模板前面）。<br>
+      <code>{{tools}}</code>：在此处插入由 pi 提供的工具清单（带参数 schema）。<br>
+      <code>{{messages}}</code>：在此处插入对话历史（用户 / 助手 / 工具结果消息按顺序拼接）。出现该占位符时，对话历史不再被自动追加到模板后面，你可以在它之后继续追加自定义提示词；缺省时为兼容旧行为仍会被自动追加到模板末尾。<br>
       留空保存或点击"重置默认"会恢复内置版本。修改后立即生效，无需重启 pi。
     </div>
     <main>

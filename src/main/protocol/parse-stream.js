@@ -293,7 +293,7 @@ function createTranslator(opts) {
           toolBuffer += buffer;
           buffer = '';
           flushToolBuffer();
-          state = STATE_IDLE;
+          state = toolCallsEmitted ? STATE_TRUNCATED : STATE_IDLE;
         }
         return;
       }
@@ -303,6 +303,15 @@ function createTranslator(opts) {
       if (buffer[consumed] === '\n') consumed++;
       buffer = buffer.slice(consumed);
       flushToolBuffer();
+      // Cap at one tool_call per turn: anything after a successful tool_call
+      // close fence (more fences, narration, fake [工具结果], whatever) gets
+      // dropped. Malformed tool blocks fall back to IDLE so a subsequent
+      // valid block can still be parsed in the same turn.
+      if (toolCallsEmitted) {
+        buffer = '';
+        state = STATE_TRUNCATED;
+        return;
+      }
       state = STATE_IDLE;
     }
   }

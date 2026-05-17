@@ -131,16 +131,19 @@ function check(name, cond, info) {
   check('content forwarded alongside', deltaContent(chunks) === 'answer');
 }
 
-// 7. Multiple tool calls in sequence (rare but should not corrupt state).
+// 7. Multiple tool_call fences in a single response: only the first is
+// emitted, the rest are silently dropped by the parser cap.
 {
   const chunks = collect(t => {
     t.pushContent('一步一步：\n```tool_call\n{"name":"a","arguments":{}}\n```\n```tool_call\n{"name":"b","arguments":{}}\n```');
     t.end();
   });
   const tcs = toolCalls(chunks);
-  check('multi tool count', tcs.length === 2);
-  check('multi tool names', tcs[0] && tcs[0].name === 'a' && tcs[1] && tcs[1].name === 'b');
-  check('multi tool finish', finishReason(chunks) === 'tool_calls');
+  check('cap: only first tool call kept', tcs.length === 1);
+  check('cap: first tool name preserved', tcs[0] && tcs[0].name === 'a');
+  check('cap: finish_reason still tool_calls', finishReason(chunks) === 'tool_calls');
+  check('cap: second fence not leaked into content',
+    deltaContent(chunks).indexOf('"name":"b"') === -1);
 }
 
 // 8. buildPrompt sanity: messages + tools roundtrip into a string with the
@@ -163,7 +166,8 @@ function check(name, cond, info) {
   check('prompt has tool_call fence example', prompt.indexOf('```tool_call') !== -1);
   check('prompt has past tool_call replay', prompt.indexOf('"name":"ls"') !== -1);
   check('prompt has tool result', prompt.indexOf('[工具结果 id=call_1]') !== -1);
-  check('prompt ends with assistant cue', /\[助手\]\s*$/.test(prompt));
+  check('prompt ends with last dialog message (no trailing [助手] cue)',
+    /\[用户\]\nwhat next\?\s*$/.test(prompt));
 }
 
 // 9. buildPrompt handles OpenAI array-style content (pi / pi-ai sends this).
@@ -221,7 +225,8 @@ function check(name, cond, info) {
 }
 
 // 13. Trailing junk after closing fence (model appends "}}" or commentary)
-// should not break parsing — fence already closed cleanly.
+// is silently dropped by the cap — protocol rule 5 forbids any post-fence
+// content, and the parser enforces it.
 {
   const chunks = collect(t => {
     t.pushContent('```tool_call\n{"name": "ls", "arguments": {}}\n```\n好的我已经调用了。');
@@ -230,7 +235,7 @@ function check(name, cond, info) {
   const tcs = toolCalls(chunks);
   check('trailing junk: tool still parsed', tcs.length === 1 && tcs[0].name === 'ls');
   check('trailing junk: finish_reason tool_calls', finishReason(chunks) === 'tool_calls');
-  check('trailing junk: trailing text reaches content', deltaContent(chunks).indexOf('好的我已经调用了。') !== -1);
+  check('trailing junk: trailing text dropped', deltaContent(chunks).indexOf('好的我已经调用了。') === -1);
 }
 
 // 14. Hallucination cutoff: model fabricates a [工具结果] block after the
@@ -312,6 +317,214 @@ function check(name, cond, info) {
   check('empty tools: placeholder dropped', prompt.indexOf('{{tools}}') === -1);
   check('empty tools: top kept', prompt.indexOf('top') !== -1);
   check('empty tools: bottom kept', prompt.indexOf('bottom') !== -1);
+}
+
+// 20. {{system}} placeholder substitutes pi's system prompt at the chosen
+// position and disables the auto-prepend, so the user can inject content
+// before it.
+{
+  const prompt = buildPrompt({
+    messages: [
+      { role: 'system', content: 'PI-SYS' },
+      { role: 'user', content: 'hi' },
+    ],
+    tools: [],
+  }, {
+    template: 'BEFORE-SYS\n\n{{system}}\n\nAFTER-SYS',
+  });
+  check('system placeholder: pi system rendered',
+    prompt.indexOf('[系统]\nPI-SYS') !== -1);
+  check('system placeholder: user content placed before pi system',
+    prompt.indexOf('BEFORE-SYS') < prompt.indexOf('[系统]\nPI-SYS'));
+  check('system placeholder: user content placed after pi system too',
+    prompt.indexOf('[系统]\nPI-SYS') < prompt.indexOf('AFTER-SYS'));
+  check('system placeholder: no duplicate auto-prepend',
+    (prompt.match(/\[系统\]\nPI-SYS/g) || []).length === 1);
+  check('system placeholder: literal token replaced',
+    prompt.indexOf('{{system}}') === -1);
+}
+
+// 21. Template without {{system}}: falls back to legacy behavior — pi's
+// system is prepended before the template.
+{
+  const prompt = buildPrompt({
+    messages: [
+      { role: 'system', content: 'PI-SYS' },
+      { role: 'user', content: 'hi' },
+    ],
+    tools: [],
+  }, {
+    template: 'MY HEADER',
+  });
+  check('no system placeholder: pi system still present',
+    prompt.indexOf('[系统]\nPI-SYS') !== -1);
+  check('no system placeholder: pi system prepended before template',
+    prompt.indexOf('[系统]\nPI-SYS') < prompt.indexOf('MY HEADER'));
+}
+
+// 22. {{system}} placeholder with NO system messages collapses cleanly.
+{
+  const prompt = buildPrompt({
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: [],
+  }, {
+    template: 'top\n\n{{system}}\n\nbottom',
+  });
+  check('empty system: placeholder dropped',
+    prompt.indexOf('{{system}}') === -1);
+  check('empty system: top kept', prompt.indexOf('top') !== -1);
+  check('empty system: bottom kept', prompt.indexOf('bottom') !== -1);
+  check('empty system: no stray [系统] header',
+    prompt.indexOf('[系统]') === -1);
+}
+
+// 23. Multiple system messages all flow into one {{system}} expansion.
+{
+  const prompt = buildPrompt({
+    messages: [
+      { role: 'system', content: 'sys-a' },
+      { role: 'developer', content: 'dev-b' },
+      { role: 'user', content: 'hi' },
+    ],
+    tools: [],
+  }, {
+    template: 'X\n\n{{system}}\n\nY',
+  });
+  check('multi system: both sys-a and dev-b present',
+    prompt.indexOf('sys-a') !== -1 && prompt.indexOf('dev-b') !== -1);
+  check('multi system: system block sits between X and Y',
+    prompt.indexOf('X') < prompt.indexOf('sys-a') &&
+    prompt.indexOf('dev-b') < prompt.indexOf('Y'));
+}
+
+// 24. Tool call followed by narration: narration is dropped (no second
+// tool_call permitted, and post-fence text is forbidden by protocol).
+{
+  const chunks = collect(t => {
+    t.pushContent('```tool_call\n{"name":"ls","arguments":{}}\n```\n好的，我接下来会读取每个文件并总结。');
+    t.end();
+  });
+  const tcs = toolCalls(chunks);
+  check('cap+narration: tool parsed', tcs.length === 1 && tcs[0].name === 'ls');
+  check('cap+narration: trailing narration dropped',
+    deltaContent(chunks).indexOf('接下来会读取') === -1);
+  check('cap+narration: finish_reason tool_calls', finishReason(chunks) === 'tool_calls');
+}
+
+// 25. Malformed first fence does NOT consume the cap: a subsequent valid
+// fence in the same turn still parses.
+{
+  const chunks = collect(t => {
+    t.pushContent('```tool_call\nnot-valid-json\n```\n再试一次：\n```tool_call\n{"name":"read","arguments":{"path":"x"}}\n```');
+    t.end();
+  });
+  const tcs = toolCalls(chunks);
+  check('cap+salvage: malformed surfaced as content',
+    deltaContent(chunks).indexOf('not-valid-json') !== -1);
+  check('cap+salvage: valid fence still parsed', tcs.length === 1 && tcs[0].name === 'read');
+  check('cap+salvage: finish_reason tool_calls', finishReason(chunks) === 'tool_calls');
+}
+
+// 26. Tool call across many tiny deltas + trailing second fence: cap holds
+// even when chunks are pathologically small.
+{
+  const blob = '```tool_call\n{"name":"a","arguments":{}}\n```\n```tool_call\n{"name":"b","arguments":{}}\n```';
+  const chunks = collect(t => {
+    for (const ch of blob) t.pushContent(ch);
+    t.end();
+  });
+  const tcs = toolCalls(chunks);
+  check('cap chunked: one tool only', tcs.length === 1);
+  check('cap chunked: first wins', tcs[0] && tcs[0].name === 'a');
+  check('cap chunked: second not in content', deltaContent(chunks).indexOf('"name":"b"') === -1);
+}
+
+// 27. {{messages}} placeholder lets the user inject custom prompt content
+// AFTER the dialog history, disables auto-append, and removes the need for
+// the legacy [助手] cue at the end.
+{
+  const prompt = buildPrompt({
+    messages: [
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'ok' },
+      { role: 'user', content: 'second' },
+    ],
+    tools: [],
+  }, {
+    template: 'HEADER\n\n{{messages}}\n\nAFTER-MSG-CUE',
+  });
+  check('messages placeholder: header kept', prompt.indexOf('HEADER') !== -1);
+  check('messages placeholder: first user content placed',
+    prompt.indexOf('[用户]\nfirst') !== -1);
+  check('messages placeholder: assistant content placed',
+    prompt.indexOf('[助手]\nok') !== -1);
+  check('messages placeholder: second user content placed',
+    prompt.indexOf('[用户]\nsecond') !== -1);
+  check('messages placeholder: AFTER cue sits past dialog',
+    prompt.indexOf('[用户]\nsecond') < prompt.indexOf('AFTER-MSG-CUE'));
+  check('messages placeholder: header before dialog',
+    prompt.indexOf('HEADER') < prompt.indexOf('[用户]\nfirst'));
+  check('messages placeholder: no duplicate auto-append',
+    (prompt.match(/\[用户\]\nfirst/g) || []).length === 1);
+  check('messages placeholder: literal token replaced',
+    prompt.indexOf('{{messages}}') === -1);
+  check('messages placeholder: no trailing [助手] cue',
+    !/\[助手\]\s*$/.test(prompt));
+}
+
+// 28. Template without {{messages}}: falls back to legacy behavior — dialog
+// is appended after the template (and still no trailing [助手] cue, that
+// piece was removed unconditionally).
+{
+  const prompt = buildPrompt({
+    messages: [
+      { role: 'user', content: 'hello' },
+    ],
+    tools: [],
+  }, {
+    template: 'ONLY HEADER',
+  });
+  check('no messages placeholder: header present',
+    prompt.indexOf('ONLY HEADER') !== -1);
+  check('no messages placeholder: dialog appended',
+    prompt.indexOf('[用户]\nhello') !== -1);
+  check('no messages placeholder: header precedes dialog',
+    prompt.indexOf('ONLY HEADER') < prompt.indexOf('[用户]\nhello'));
+  check('no messages placeholder: prompt ends with dialog, not [助手]',
+    /\[用户\]\nhello\s*$/.test(prompt));
+}
+
+// 29. {{messages}} placeholder with NO dialog messages collapses cleanly.
+{
+  const prompt = buildPrompt({
+    messages: [{ role: 'system', content: 'sys' }],
+    tools: [],
+  }, {
+    template: 'top\n\n{{messages}}\n\nbottom',
+  });
+  check('empty messages: placeholder dropped',
+    prompt.indexOf('{{messages}}') === -1);
+  check('empty messages: top kept', prompt.indexOf('top') !== -1);
+  check('empty messages: bottom kept', prompt.indexOf('bottom') !== -1);
+  check('empty messages: no stray [用户] header',
+    prompt.indexOf('[用户]') === -1);
+}
+
+// 30. Default template no longer contains the legacy "输出格式硬约束" /
+// trailing [助手] cue, but still produces a complete tool-call protocol.
+{
+  const prompt = buildPrompt({
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: [],
+  });
+  check('default: no 输出格式硬约束 section',
+    prompt.indexOf('输出格式硬约束') === -1);
+  check('default: no trailing [助手] cue',
+    !/\[助手\]\s*$/.test(prompt));
+  check('default: tool-call protocol still present',
+    prompt.indexOf('工具调用协议') !== -1);
+  check('default: hard rules still present',
+    prompt.indexOf('硬性规则') !== -1);
 }
 
 console.log('');

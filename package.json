@@ -68,7 +68,9 @@
         {
           "from": "vendor/node/darwin-${arch}/",
           "to": "node/",
-          "filter": ["node"]
+          "filter": [
+            "node"
+          ]
         }
       ]
     },
@@ -86,7 +88,9 @@
         {
           "from": "vendor/node/win-${arch}/",
           "to": "node/",
-          "filter": ["node.exe"]
+          "filter": [
+            "node.exe"
+          ]
         }
       ]
     },
@@ -112,7 +116,9 @@
         {
           "from": "vendor/node/linux-${arch}/",
           "to": "node/",
-          "filter": ["node"]
+          "filter": [
+            "node"
+          ]
         }
       ]
     }

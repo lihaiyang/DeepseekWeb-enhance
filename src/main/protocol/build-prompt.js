@@ -7,20 +7,38 @@
  * 字段。这里把标准 OpenAI 请求拼成一段自包含文本：系统提示 + 工具列表 +
  * 消息历史，并约定一种工具调用 / 工具结果的纯文本格式让模型遵循。
  *
- * 用户可以覆盖默认的"注入模板"（工具协议规则 + 输出格式硬约束）。模板里用
- * `{{tools}}` 占位符表示"在此处插入动态生成的工具清单"。
+ * 用户可以覆盖默认的"注入模板"（工具协议规则 + 工具清单）。模板里支持三个占位符：
+ *   - `{{system}}`：替换为 pi 自带的 system / developer 消息（每条会被格式化
+ *     为 `[系统]\n<content>` 块）。模板里出现该占位符时，pi 的 system 不再
+ *     被自动前置 —— 由模板决定它出现在哪里；模板里没有该占位符时，沿用旧
+ *     行为，把 pi 的 system 拼在模板前面。
+ *   - `{{tools}}`：替换为动态生成的工具清单。
+ *   - `{{messages}}`：替换为对话历史（用户 / 助手 / 工具结果消息按顺序拼接）。
+ *     模板里出现该占位符时，对话历史不再被自动追加到模板后面 —— 由模板决定
+ *     它出现在哪里（你可以在它后面继续写自定义提示词）；缺省时为兼容旧行为
+ *     仍会被自动追加到模板末尾。
  */
 
 const TOOL_CALL_FENCE_OPEN = '```tool_call';
 const TOOL_CALL_FENCE_CLOSE = '```';
 const TOOLS_PLACEHOLDER = '{{tools}}';
+const SYSTEM_PLACEHOLDER = '{{system}}';
+const MESSAGES_PLACEHOLDER = '{{messages}}';
 
 // ─── Default injected template ───────────────────────────────────────
-// Order intentionally: tool list first (so the model sees *what* it can
-// call), then the call protocol (so it knows *how* to call), then the
-// output hard rules (so it knows *what not to write*).
+// Order intentionally: reasoning-effort preamble first (sets the
+// "think hard" stance before anything else), then pi's system prompt
+// (via {{system}}), then the tool list (so the model sees *what* it
+// can call), then the call protocol (so it knows *how* to call), and
+// finally the dialog history (via {{messages}}).
 
 const DEFAULT_TEMPLATE = [
+  'Reasoning Effort: Absolute maximum with no shortcuts permitted.',
+  'You MUST be very thorough in your thinking and comprehensively decompose the problem to resolve the root cause, rigorously stress-testing your logic against all potential paths, edge cases, and adversarial scenarios.',
+  'Explicitly write out your entire deliberation process, documenting every intermediate step, considered alternative, and rejected hypothesis to ensure absolutely no assumption is left unchecked.',
+  '',
+  '{{system}}',
+  '',
   '{{tools}}',
   '',
   '# 工具调用协议（必须严格遵守，否则调用作废）',
@@ -43,8 +61,9 @@ const DEFAULT_TEMPLATE = [
   '4. **代码块的开头必须是单独一行 `' + TOOL_CALL_FENCE_OPEN + '`**，结尾必须是单独一行 ``` （3 个反引号）。',
   '5. **代码块闭合的 ``` 之后绝对不能有任何字符**（包括空格、换行、解释、确认语）。',
   '   任何"我已经/接下来"的话都会被截掉、并让本次调用作废。',
-  '6. **一次只发起一个工具调用**。需要多个工具时分多轮进行。',
+  '6. **每次回复最多只能发一个 `tool_call` fence**。宿主的解析器在第一个 fence 闭合后会立刻进入"丢弃"模式，**之后的所有内容（第二个 fence、叙述、解释、伪造的工具结果）都会被静默吞掉，等于不存在**。需要多个工具时分多轮发起，每轮等待真实的 `[工具结果 id=...]` 回填之后再发下一个。',
   '7. **fence 之前可以写一两句解释**，但不要在 fence 之内/之后写任何说明。',
+  '8. **禁止凭空叙述工具的执行结果**。真实的工具输出只会以 `[工具结果 id=...]` 块的形式由宿主回填给你；如果当前对话历史里没有这种块，就意味着工具还没运行过，你说的"我刚刚读到/看到/检查了 X，得到 Y"全是编造，会被用户直接识破。需要数据请先调用工具拿到真实结果。',
   '',
   '## 正确示例 ✅',
   '',
@@ -71,14 +90,26 @@ const DEFAULT_TEMPLATE = [
   '',
   '错误 3：JSON 多了 `}}` 等多余括号、尾随逗号，导致 `JSON.parse` 失败。',
   '',
-  '# 输出格式硬约束（违反会导致输出被截断）',
+  '错误 4：编造工具结果。',
   '',
-  '你的回复只是接在最末尾 `[助手]` 之后的一段助手发言，**绝对不能**输出以下任何分隔符：',
+  '> 我已经读了 src/index.js，它导出了一个 `start()` 函数，里面调用了 ...',
   '',
-  '- 行首的 `[用户]`、`[助手]`、`[系统]`、`[开发者]`',
-  '- 行首的 `[工具结果` / `[工具结果 id=...]`',
+  '← 错误：上面这段话之前没有任何 `tool_call` fence，也没有 `[工具结果 id=...]` 回填，所以这里描述的"内容"完全是凭空捏造。正确做法是先发 `tool_call`，等下一轮宿主回填真实结果后再总结。',
   '',
-  '这些标签由宿主系统填充，模型生成它们等于伪造历史。一旦检测到，本次回复会在这些标签处被立即截断，截断点之后的所有内容（包括"已完成 / 已创建"之类的确认）都将丢失。',
+  '错误 5：一次发起多个工具调用。',
+  '',
+  '我同时读两个文件：',
+  '',
+  TOOL_CALL_FENCE_OPEN,
+  '{"name": "read", "arguments": {"path": "a.js"}}',
+  TOOL_CALL_FENCE_CLOSE,
+  TOOL_CALL_FENCE_OPEN,
+  '{"name": "read", "arguments": {"path": "b.js"}}',
+  TOOL_CALL_FENCE_CLOSE,
+  '',
+  '← 错误：第二个 fence 会被解析器静默丢弃，只有第一个真正生效。第二个文件请下一轮再读。',
+  '',
+  '{{messages}}',
 ].join('\n');
 
 // ─── Helpers ─────────────────────────────────────────────────────────
@@ -119,16 +150,36 @@ function buildToolList(tools) {
 }
 
 /**
- * Substitute `{{tools}}` (and any leading/trailing blank lines around it
- * when the list is empty) in the user-controlled template.
+ * Substitute `{{system}}` / `{{tools}}` / `{{messages}}` in the
+ * user-controlled template. When a placeholder's expansion is empty (no
+ * system messages / no tools / no dialog), the placeholder is dropped
+ * cleanly so we don't leave stray blank lines.
  */
-function renderTemplate(template, tools) {
+function renderTemplate(template, tools, systemBlock, messagesBlock) {
+  let out = template;
+
+  const sysText = (typeof systemBlock === 'string' ? systemBlock : '').trim();
+  if (sysText) {
+    out = out.split(SYSTEM_PLACEHOLDER).join(sysText);
+  } else {
+    out = out.replace(/\n*\{\{system\}\}\n*/g, '\n\n');
+  }
+
   const toolList = buildToolList(tools);
   if (toolList) {
-    return template.split(TOOLS_PLACEHOLDER).join(toolList);
+    out = out.split(TOOLS_PLACEHOLDER).join(toolList);
+  } else {
+    out = out.replace(/\n*\{\{tools\}\}\n*/g, '\n\n');
   }
-  // No tools: drop the placeholder cleanly, collapsing surrounding blank lines.
-  return template.replace(/\n*\{\{tools\}\}\n*/g, '\n\n').trim();
+
+  const msgText = (typeof messagesBlock === 'string' ? messagesBlock : '').trim();
+  if (msgText) {
+    out = out.split(MESSAGES_PLACEHOLDER).join(msgText);
+  } else {
+    out = out.replace(/\n*\{\{messages\}\}\n*/g, '\n\n');
+  }
+
+  return out.trim();
 }
 
 function stringifyContent(content) {
@@ -225,18 +276,22 @@ function buildPrompt(body, opts) {
     else dialogMsgs.push(m);
   }
 
-  // 1. pi's own system prompt(s)
-  for (const m of systemMsgs) sections.push(formatMessage(m));
+  const systemBlock = systemMsgs.map(formatMessage).filter(Boolean).join('\n\n');
+  const messagesBlock = dialogMsgs.map(formatMessage).filter(Boolean).join('\n\n');
+  const templateOwnsSystem = template.indexOf(SYSTEM_PLACEHOLDER) !== -1;
+  const templateOwnsMessages = template.indexOf(MESSAGES_PLACEHOLDER) !== -1;
 
-  // 2. Injected template (tool list + protocol rules + output hard rules)
-  const injected = renderTemplate(template, tools);
+  // 1. pi's own system prompt(s) — only auto-prepended when the template
+  //    doesn't claim the position via {{system}}.
+  if (!templateOwnsSystem && systemBlock) sections.push(systemBlock);
+
+  // 2. Injected template (system / tool list / protocol rules / messages)
+  const injected = renderTemplate(template, tools, systemBlock, messagesBlock);
   if (injected) sections.push(injected);
 
-  // 3. Dialog history
-  for (const m of dialogMsgs) sections.push(formatMessage(m));
-
-  // 4. Generation cue
-  sections.push('[助手]');
+  // 3. Dialog history — only auto-appended when the template doesn't claim
+  //    the position via {{messages}}.
+  if (!templateOwnsMessages && messagesBlock) sections.push(messagesBlock);
 
   return sections.filter(Boolean).join('\n\n');
 }
@@ -249,4 +304,6 @@ module.exports = {
   TOOL_CALL_FENCE_OPEN,
   TOOL_CALL_FENCE_CLOSE,
   TOOLS_PLACEHOLDER,
+  SYSTEM_PLACEHOLDER,
+  MESSAGES_PLACEHOLDER,
 };
