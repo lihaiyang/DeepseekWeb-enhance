@@ -195,10 +195,9 @@ class PiRunner {
       // Build the env the pi *child* will see (passed through the host).
       const piEnv = Object.assign({}, process.env, this._extraEnv, {
         PI_CODING_AGENT_DIR: this._piHome,
-        // PI_OFFLINE=1 skips pi's first-run downloads of fd / ripgrep. They
-        // come from GitHub releases and are rate-limited / region-blocked
-        // for many users (HTTP 403). pi falls back to a slower built-in
-        // search when the binaries are absent.
+        // fd & ripgrep are bundled with the app (vendor/tools/) and copied
+        // to the agent bin directory at launch, so pi never needs to download
+        // them from GitHub. PI_OFFLINE=1 prevents fallback download attempts.
         PI_OFFLINE: '1',
         PI_SKIP_VERSION_CHECK: '1',
         PI_TELEMETRY: '0',

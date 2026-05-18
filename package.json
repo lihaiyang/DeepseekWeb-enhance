@@ -71,6 +71,10 @@
           "filter": [
             "node"
           ]
+        },
+        {
+          "from": "vendor/tools/darwin-${arch}/",
+          "to": "tools/"
         }
       ]
     },
@@ -91,6 +95,10 @@
           "filter": [
             "node.exe"
           ]
+        },
+        {
+          "from": "vendor/tools/win-${arch}/",
+          "to": "tools/"
         }
       ]
     },
@@ -119,6 +127,10 @@
           "filter": [
             "node"
           ]
+        },
+        {
+          "from": "vendor/tools/linux-${arch}/",
+          "to": "tools/"
         }
       ]
     }

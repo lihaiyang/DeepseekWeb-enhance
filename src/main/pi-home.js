@@ -16,6 +16,64 @@ const { app } = require('electron');
 const MODEL_ID = 'deepseek-via-web';
 const PROVIDER_KEY = 'ds-agent';
 
+// ─── Tools (fd / ripgrep) ───────────────────────────────────────────
+// pi-coding-agent uses fd and ripgrep for fast file search. These are
+// bundled as extraResources (vendor/tools/<platform>/) and copied to
+// pi's bin directory on first launch so pi picks them up automatically.
+
+function platformToolsKey() {
+  const arch = process.arch;
+  if (process.platform === 'win32')  return 'win-x64';
+  if (process.platform === 'darwin') return arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
+  if (process.platform === 'linux')  return 'linux-x64';
+  return null;
+}
+
+function resolveToolsSourceDir() {
+  // Packaged app: extraResources populates process.resourcesPath/tools/
+  const resourcesTools = path.join(process.resourcesPath || '', 'tools');
+  if (fs.existsSync(resourcesTools)) return resourcesTools;
+  // Dev mode: vendor/tools/<platform>/ at project root
+  const key = platformToolsKey();
+  if (!key) return null;
+  const vendorTools = path.join(__dirname, '..', '..', 'vendor', 'tools', key);
+  if (fs.existsSync(vendorTools)) return vendorTools;
+  return null;
+}
+
+function ensureTools(piHome) {
+  const srcDir = resolveToolsSourceDir();
+  if (!srcDir) {
+    console.warn('[pi-home] tools source dir not found — fd/rg will not be available');
+    return;
+  }
+  const binDir = path.join(piHome, 'bin');
+  if (!fs.existsSync(binDir)) fs.mkdirSync(binDir, { recursive: true });
+
+  const isWin = process.platform === 'win32';
+  const tools = isWin ? ['fd.exe', 'rg.exe'] : ['fd', 'rg'];
+
+  for (const name of tools) {
+    const src = path.join(srcDir, name);
+    const dest = path.join(binDir, name);
+    if (!fs.existsSync(src)) {
+      console.warn('[pi-home] tool source missing: ' + src);
+      continue;
+    }
+    // Skip if already present (avoid unnecessary copies on every launch)
+    if (fs.existsSync(dest)) continue;
+    try {
+      fs.copyFileSync(src, dest);
+      if (!isWin) {
+        try { fs.chmodSync(dest, 0o755); } catch (_) {}
+      }
+      console.log('[pi-home] installed tool: ' + name);
+    } catch (err) {
+      console.error('[pi-home] failed to copy ' + name + ': ' + (err && err.message || err));
+    }
+  }
+}
+
 function agentDir() {
   return path.join(app.getPath('userData'), 'pi-home');
 }
@@ -101,6 +159,7 @@ function writeDefaultSettings() {
  */
 function prepare(httpPort) {
   ensureDirs();
+  ensureTools(agentDir());
   const modelsPath = writeModelsJson(httpPort);
   const settingsPath = writeDefaultSettings();
   return {
