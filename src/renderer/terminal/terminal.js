@@ -44,16 +44,6 @@
   term.open(document.getElementById('term'));
   try { fit.fit(); } catch (_) {}
 
-  // ── status helpers ──────────────────────────────────────────────
-  const dot = document.getElementById('dot');
-  const statusText = document.getElementById('status-text');
-  function setStatus(text, level) {
-    statusText.textContent = text;
-    dot.classList.remove('warn', 'err');
-    if (level === 'warn') dot.classList.add('warn');
-    if (level === 'err')  dot.classList.add('err');
-  }
-
   // ── workspace controls ─────────────────────────────────────────
   const btnWorkspace = document.getElementById('btn-workspace');
   const workspaceLabel = document.getElementById('workspace-label');
@@ -66,7 +56,6 @@
     dsAgent.workspace.onChanged((cwd) => {
       setWorkspaceLabel(cwd);
       term.reset();
-      setStatus('工作目录已切换：' + cwd);
     });
     btnWorkspace.addEventListener('click', async () => {
       try {
@@ -74,9 +63,7 @@
         if (r && r.changed) {
           setWorkspaceLabel(r.cwd);
         }
-      } catch (e) {
-        setStatus('切换目录失败: ' + (e && e.message || e), 'err');
-      }
+      } catch (_) {}
     });
   }
 
@@ -86,11 +73,8 @@
   function startPi() {
     if (started) return;
     started = true;
-    setStatus('正在启动 pi…');
-    dsAgent.pty.start().then(() => {
-      setStatus('pi 已启动');
-    }).catch((err) => {
-      setStatus('pi 启动失败: ' + (err && err.message || err), 'err');
+    dsAgent.pty.start().catch((err) => {
+      term.write('\r\n\x1b[31m[pi 启动失败: ' + (err && err.message || err) + ']\x1b[0m\r\n');
     });
   }
 
@@ -98,7 +82,6 @@
   dsAgent.pty.onExit((info) => {
     const code = info && info.exitCode != null ? info.exitCode : '?';
     const sig = info && info.signal ? ' signal=' + info.signal : '';
-    setStatus('pi 已退出 (code=' + code + sig + ')', 'warn');
     term.write('\r\n\x1b[33m[pi exited code=' + code + sig + ']\x1b[0m\r\n');
     started = false;
   });
@@ -155,16 +138,37 @@
 
   document.getElementById('btn-restart').addEventListener('click', () => {
     if (!confirm('重启 pi 进程？终端历史会清空。')) return;
-    setStatus('重启中…');
     dsAgent.pty.restart().then(() => {
       term.reset();
-      setStatus('pi 已重启');
-    }).catch((err) => setStatus('重启失败: ' + (err && err.message || err), 'err'));
+    }).catch((err) => term.write('\r\n\x1b[31m[重启失败: ' + (err && err.message || err) + ']\x1b[0m\r\n'));
   });
 
   if (dsAgent.prompt && dsAgent.prompt.openEditor) {
     document.getElementById('btn-prompt').addEventListener('click', () => {
       dsAgent.prompt.openEditor();
+    });
+  }
+
+  // ── Mode toggle (expert / quick) ──────────────────────────────────
+  const btnMode = document.getElementById('btn-mode');
+  let currentMode = 'expert';
+
+  function applyModeButton(mode) {
+    currentMode = mode;
+    btnMode.textContent = mode === 'quick' ? '快速' : '专家';
+    btnMode.className = 'mode-btn ' + mode + ' active';
+    btnMode.title = '当前：' + (mode === 'quick' ? '快速模式' : '专家模式') + '（点击切换）';
+  }
+
+  if (dsAgent.mode) {
+    dsAgent.mode.get().then((mode) => {
+      if (mode) applyModeButton(mode);
+    }).catch(() => {});
+    dsAgent.mode.onChanged((mode) => applyModeButton(mode));
+    btnMode.addEventListener('click', () => {
+      const next = currentMode === 'expert' ? 'quick' : 'expert';
+      applyModeButton(next);
+      dsAgent.mode.set(next);
     });
   }
 

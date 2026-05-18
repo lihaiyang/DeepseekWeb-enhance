@@ -29,4 +29,9 @@ contextBridge.exposeInMainWorld('dsAgent', {
   prompt: {
     openEditor: () => ipcRenderer.send('prompt:open-editor'),
   },
+  mode: {
+    get:       () => ipcRenderer.invoke('mode:get'),
+    set:       (v) => ipcRenderer.send('mode:set', v),
+    onChanged: (cb) => ipcRenderer.on('mode:changed', (_e, v) => cb(v)),
+  },
 });

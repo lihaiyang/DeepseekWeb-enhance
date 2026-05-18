@@ -66,6 +66,14 @@ let runner = null;
 let logStream = null;
 let promptEditorWindow = null;
 
+function defaultMode() { return 'expert'; }
+function getMode() { return loadConfig().mode || defaultMode(); }
+function setMode(v) {
+  const valid = (v === 'quick' || v === 'expert') ? v : defaultMode();
+  saveConfig({ mode: valid });
+  return valid;
+}
+
 // ─── Logging ─────────────────────────────────────────────────────────
 function getLogPath() {
   const dir = path.join(os.homedir(), '.ds-agent', 'log');
@@ -320,6 +328,16 @@ function wireIpc() {
     setCurrentPromptTemplate('');
     return true;
   });
+
+  // Agent mode toggle (expert / quick)
+  ipcMain.handle('mode:get', () => getMode());
+  ipcMain.on('mode:set', (_e, v) => {
+    const next = setMode(v);
+    log('mode', { event: 'changed', mode: next });
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('mode:changed', next);
+    }
+  });
 }
 
 // ─── App lifecycle ───────────────────────────────────────────────────
@@ -334,6 +352,7 @@ app.whenReady().then(async () => {
   // 1. Bridge + HTTP server (must bind before pi-home.prepare writes the port)
   bridge = new LlmBridge({
     getTemplate: getCurrentPromptTemplate,
+    getMode: getMode,
     log: (tag, p) => log(tag, p || {}),
   });
   httpServer = createHttpServer({ bridge, log: (tag, p) => log('http', { tag, ...(p || {}) }) });

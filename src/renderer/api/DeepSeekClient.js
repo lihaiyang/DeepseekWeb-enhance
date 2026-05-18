@@ -2,9 +2,9 @@
  * DeepSeekClient — DeepSeek 网页操作的"API 风格"封装。
  *
  * 唯一职责：把一段纯 prompt 文本注入聊天页面、等待流式响应、把 thinking /
- * content 增量回调出去。每次 sendRaw 都先点"开启新会话"，再确保"专家模式"
- * 处于选中、"智能搜索"处于关闭，最后才注入 prompt，确保请求是 self-contained
- * 的。
+ * content 增量回调出去。每次 sendRaw 都先点"开启新会话"，再根据当前模式
+ * 确保"专家模式"或"快速模式"处于选中、"智能搜索"处于关闭，最后才注入
+ * prompt，确保请求是 self-contained 的。
  *
  * Injected into the MAIN WORLD by preload.
  *
@@ -211,6 +211,30 @@
     });
   }
 
+  function _selectQuickMode() {
+    return new Promise(function (resolve) {
+      var el = _findLabelEl('快速模式');
+      if (!el) {
+        _log('WARN', 'quickMode: button not found, falling back to expert');
+        resolve();
+        return;
+      }
+      // Already selected?
+      var node = el;
+      while (node && node !== document.body) {
+        if (_hasActiveMarker(node)) {
+          _log('INFO', 'quickMode: already selected');
+          resolve();
+          return;
+        }
+        node = node.parentElement;
+      }
+      el.click();
+      _log('INFO', 'quickMode: clicked');
+      setTimeout(resolve, 300);
+    });
+  }
+
   function _disableWebSearch() {
     return new Promise(function (resolve) {
       var el = _findLabelEl('智能搜索');
@@ -253,7 +277,9 @@
     });
   }
 
-  function _ensureExpertModeAndNoSearch() {
+  function _ensureModeAndNoSearch() {
+    var mode = window.__dsAgentMode;
+    if (mode === 'quick') return _selectQuickMode().then(_disableWebSearch);
     return _selectExpertMode().then(_disableWebSearch);
   }
 
@@ -289,7 +315,7 @@
 
     this._takeoverAdapterCallbacks(adapter);
 
-    return _clickNewChatButton().then(_ensureExpertModeAndNoSearch).then(function () {
+    return _clickNewChatButton().then(_ensureModeAndNoSearch).then(function () {
       return new Promise(function (resolve, reject) {
         var settled = false;
         function settle(err, result) {

@@ -22,7 +22,7 @@
  *  - 触发时把"模型响应超时"错误塞进流尾部，并通知 renderer 放弃这次请求
  *
  * 与 renderer 的 IPC 协议：
- *   main → renderer:  channel "llm:run"     payload { requestId, prompt }
+ *   main → renderer:  channel "llm:run"     payload { requestId, prompt, mode }
  *                     channel "llm:abort"   payload { requestId }
  *   renderer → main:  channel "llm:thinking"  { requestId, delta }
  *                     channel "llm:content"   { requestId, delta }
@@ -45,6 +45,7 @@ class LlmBridge {
     this._queue = [];               // FIFO of dispatch functions waiting for the page
     this._busy = false;
     this._getTemplate = (opts && typeof opts.getTemplate === 'function') ? opts.getTemplate : null;
+    this._getMode = (opts && typeof opts.getMode === 'function') ? opts.getMode : null;
     this._log = (opts && typeof opts.log === 'function') ? opts.log : null;
     this._stallTimeoutMs = (opts && Number.isFinite(opts.stallTimeoutMs)) ? opts.stallTimeoutMs : STALL_TIMEOUT_MS;
 
@@ -198,7 +199,8 @@ class LlmBridge {
       requestId: handle.requestId,
       promptLen: handle.prompt.length,
     });
-    this._webContents.send('llm:run', { requestId: handle.requestId, prompt: handle.prompt });
+    const mode = this._getMode ? this._getMode() : 'expert';
+    this._webContents.send('llm:run', { requestId: handle.requestId, prompt: handle.prompt, mode: mode });
   }
 
   _armStallTimer(state) {
@@ -238,6 +240,8 @@ class LlmBridge {
 
     if (state.handle.aborted) {
       this._finishRequest(state.handle, state.handle.reject, new Error('aborted'));
+    } else if (hadError) {
+      this._finishRequest(state.handle, state.handle.reject, new Error(errorMessage || 'unknown stream error'));
     } else {
       this._finishRequest(state.handle, state.handle.resolve, undefined);
     }

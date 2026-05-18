@@ -6,7 +6,7 @@
  * thinking / content increments back as IPC events.
  *
  * Protocol (matches src/main/llm-bridge.js):
- *   in   "llm:run"        { requestId, prompt }
+ *   in   "llm:run"        { requestId, prompt, mode }
  *   in   "llm:abort"      { requestId }
  *   out  "llm:thinking"   { requestId, delta }
  *   out  "llm:content"    { requestId, delta }
@@ -100,6 +100,9 @@
     var requestId = payload && payload.requestId;
     var prompt = (payload && payload.prompt) || '';
     if (typeof requestId !== 'number') return;
+
+    // Set mode before sending the request so DeepSeekClient can read it.
+    window.__dsAgentMode = (payload && payload.mode === 'quick') ? 'quick' : 'expert';
 
     var c = ensureClient();
     if (!c) {

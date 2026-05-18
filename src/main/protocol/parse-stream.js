@@ -25,15 +25,26 @@ const STATE_TRUNCATED = 2;
 const { TOOL_CALL_FENCE_OPEN, TOOL_CALL_FENCE_CLOSE } = require('./build-prompt');
 
 // Line-prefix tokens that, if produced by the model, mean it has started
-// hallucinating the next turn of the dialog script (a `[工具结果]` block,
-// the next `[助手]` line, etc). When we hit one we cut the stream off
+// hallucinating the next turn of the dialog script (a `<|工具|>` block,
+// the next `<|助手|>` line, etc). When we hit one we cut the stream off
 // at that point and discard everything that follows.
 const HALLUCINATION_STOP_SEQUENCES = [
-  '[工具结果',
-  '[助手]',
-  '[用户]',
-  '[系统]',
-  '[开发者]',
+  '<|工具|>',
+  '<|助手|>',
+  '<|用户|>',
+  '<|系统|>',
+  '<|开发者|>',
+  '<|约束|>',
+  '<|工具定义|>',
+  '<|工具协议|>',
+  '<|约束结束|>',
+  '<|系统结束|>',
+  '<|用户结束|>',
+  '<|助手结束|>',
+  '<|开发者结束|>',
+  '<|工具定义结束|>',
+  '<|工具协议结束|>',
+  '<|工具结果结束|>',
 ];
 
 function generateId(prefix) {
@@ -304,7 +315,7 @@ function createTranslator(opts) {
       buffer = buffer.slice(consumed);
       flushToolBuffer();
       // Cap at one tool_call per turn: anything after a successful tool_call
-      // close fence (more fences, narration, fake [工具结果], whatever) gets
+      // close fence (more fences, narration, fake tool markers, whatever) gets
       // dropped. Malformed tool blocks fall back to IDLE so a subsequent
       // valid block can still be parsed in the same turn.
       if (toolCallsEmitted) {

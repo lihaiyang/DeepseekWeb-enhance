@@ -201,21 +201,9 @@ function createHttpServer(deps) {
           writeSseDone(res);
         } catch (err) {
           log('llm:error', { message: err.message });
-          // Embed error as a final delta so pi sees a finishing chunk.
-          try {
-            writeSseChunk(res, {
-              id: 'chatcmpl-err-' + Date.now().toString(36),
-              object: 'chat.completion.chunk',
-              created: nowSeconds(),
-              model: body.model || 'deepseek-via-web',
-              choices: [{
-                index: 0,
-                delta: { content: '\n[ds-agent error: ' + err.message + ']' },
-                finish_reason: 'stop',
-              }],
-            });
-            writeSseDone(res);
-          } catch (_) {}
+          // Don't write [DONE] — let the SSE connection close abruptly so
+          // the client SDK treats this as a stream interruption and surfaces
+          // the error to the user.
         } finally {
           req.removeListener('close', onClose);
           try { res.end(); } catch (_) {}

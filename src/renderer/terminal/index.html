@@ -30,6 +30,11 @@
     }
     header button:hover { background: #25252b; }
     header button.active { background: #2a4d7a; border-color: #3a6ea5; }
+    .mode-btn { font-size: 12px; padding: 4px 10px; }
+    .mode-btn.expert { border-color: #6a3a9e; background: #1e1e22; }
+    .mode-btn.expert.active { background: #4a2d7a; border-color: #7a5ea5; }
+    .mode-btn.quick { border-color: #3a7a4a; background: #1e1e22; }
+    .mode-btn.quick.active { background: #2d5a3a; border-color: #4a7a5a; }
     .path-btn { display: inline-flex; align-items: center; gap: 6px; max-width: 360px; }
     .path-btn .folder-ico { opacity: 0.8; }
     .path-btn #workspace-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; max-width: 320px; }
@@ -38,16 +43,13 @@
       background: #0e0e0f;
     }
     #term { width: 100%; height: 100%; }
-    #status {
-      padding: 4px 12px; background: #131318; border-top: 1px solid #26262b;
-      font-size: 11px; color: #888; min-height: 22px;
+    /* custom scrollbar for xterm viewport */
+    .xterm-viewport::-webkit-scrollbar { width: 6px; }
+    .xterm-viewport::-webkit-scrollbar-track { background: transparent; }
+    .xterm-viewport::-webkit-scrollbar-thumb {
+      background: #3a3a42; border-radius: 3px;
     }
-    .pulse-dot {
-      display: inline-block; width: 6px; height: 6px; border-radius: 50%;
-      background: #4caf50; margin-right: 6px; vertical-align: middle;
-    }
-    .pulse-dot.warn { background: #f5a623; }
-    .pulse-dot.err  { background: #e53935; }
+    .xterm-viewport::-webkit-scrollbar-thumb:hover { background: #4a4a55; }
   </style>
 </head>
 <body>
@@ -58,12 +60,12 @@
         <span class="folder-ico">📁</span><span id="workspace-label">~</span>
       </button>
       <span class="spacer"></span>
+      <button id="btn-mode" class="mode-btn" title="切换快速/专家模式">专家</button>
       <button id="btn-prompt"   title="编辑注入提示词">提示词</button>
       <button id="btn-deepseek" title="显示/隐藏 DeepSeek 网页 (Ctrl+Shift+D)">显示网页</button>
       <button id="btn-restart"  title="重启 pi 进程">重启 pi</button>
     </header>
     <div id="term-host"><div id="term"></div></div>
-    <div id="status"><span class="pulse-dot" id="dot"></span><span id="status-text">启动中…</span></div>
   </div>
 
   <script src="../../../node_modules/@xterm/xterm/lib/xterm.js"></script>

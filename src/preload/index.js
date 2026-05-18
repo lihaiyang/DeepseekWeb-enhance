@@ -64,7 +64,7 @@ const EARLY_HOOK_CODE = (
   '    if (!hint) return bodyStr;\n' +
   '    try {\n' +
   '      var parsed = JSON.parse(bodyStr);\n' +
-  '      if (bodyStr.indexOf("[系统指令]") !== -1) return bodyStr;\n' +
+  '      if (bodyStr.indexOf("<|系统|>") !== -1) return bodyStr;\n' +
   '      if (parsed.prompt && typeof parsed.prompt === "string") {\n' +
   '        parsed.prompt = hint + "\\n\\n" + parsed.prompt;\n' +
   '        return JSON.stringify(parsed);\n' +
