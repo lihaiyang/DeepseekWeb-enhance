@@ -1662,6 +1662,10 @@ function finalizeThinkingBubble(skipSave) {
     const text = inputTextarea?.value?.trim();
     if (!text) return;
 
+    // Ensure expert mode is selected and smart search is disabled before sending
+    selectExpertMode();
+    disableWebSearch();
+
     // Show user message in panel
     addMessage('user', text, '你');
     totalInputChars += text.length;
@@ -1911,6 +1915,10 @@ function finalizeThinkingBubble(skipSave) {
 
         var finalResponse;
         try {
+          // Ensure expert mode is selected and smart search is disabled
+          selectExpertMode();
+          disableWebSearch();
+
           // Send with context-managed messages (not all history)
           var allMessages = conversationManager.getMessages();
           var sysPrompt = buildToolHint();
