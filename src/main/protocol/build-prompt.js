@@ -439,6 +439,41 @@ function formatMessage(message) {
 }
 
 /**
+ * Build a continuation prompt for follow-up turns in the same DeepSeek
+ * chat session. Only formats the new (incremental) messages — no duplicate
+ * constraint injection, tool definitions, protocol rules, or examples.
+ * Skips assistant messages (already visible in the chat window) and only
+ * appends the bridging hint when actual tool results are present.
+ *
+ * @param {Array} messages - Full messages array from the OpenAI request
+ * @param {number} startIndex  - Index of the first new message
+ *   (already-sent messages are at indices 0..startIndex-1)
+ * @returns {string}
+ */
+function buildContinuationPrompt(messages, startIndex) {
+  const newMessages = messages.slice(startIndex);
+  if (!Array.isArray(newMessages) || newMessages.length === 0) return '';
+
+  const parts = [];
+  let hasToolResult = false;
+
+  for (const m of newMessages) {
+    // 跳过 assistant 消息 — DeepSeek 聊天窗口已有模型的回复，无需重复
+    if (m.role === 'assistant') continue;
+    if (m.role === 'tool') hasToolResult = true;
+    const formatted = formatMessage(m);
+    if (formatted) parts.push(formatted);
+  }
+
+  // 只在真正有工具结果时才追加指引语
+  if (hasToolResult) {
+    parts.push('(以上为工具调用的真实返回结果，请基于对话上下文继续完成原始任务)');
+  }
+
+  return parts.join('\n\n');
+}
+
+/**
  * @param {object} body - OpenAI /v1/chat/completions body
  * @param {object} [opts]
  * @param {string} [opts.template] - user-provided override for the injected
@@ -483,6 +518,7 @@ function buildPrompt(body, opts) {
 
 module.exports = {
   buildPrompt,
+  buildContinuationPrompt,
   buildToolList,
   buildDynamicExamples,
   renderTemplate,
