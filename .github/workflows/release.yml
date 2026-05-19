@@ -13,18 +13,24 @@ on:
 
 jobs:
   build:
-    name: Build ${{ matrix.platform }}
+    name: Build ${{ matrix.platform }} (${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          - os: macos-13
+            platform: mac
+            arch: x64
           - os: macos-latest
             platform: mac
+            arch: arm64
           - os: windows-latest
             platform: win
+            arch: x64
           - os: ubuntu-latest
             platform: linux
+            arch: x64
 
     steps:
       - name: Checkout
@@ -44,7 +50,7 @@ jobs:
         run: npm ci || npm install
 
       - name: Build ${{ matrix.platform }}
-        run: npm run build:${{ matrix.platform }} -- --publish never
+        run: npm run build:${{ matrix.platform }} -- --publish never --${{ matrix.arch }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -53,7 +59,7 @@ jobs:
         if: matrix.platform == 'mac'
         uses: actions/upload-artifact@v4
         with:
-          name: mac-build
+          name: mac-${{ matrix.arch }}-build
           path: |
             dist/*.dmg
             dist/*.zip
