@@ -98,7 +98,7 @@ const DEFAULT_TEMPLATE = [
   '4. **代码块的开头必须是单独一行 `' + TOOL_CALL_FENCE_OPEN + '`**，结尾必须是单独一行 ``` （3 个反引号）。',
   '5. **代码块闭合的 ``` 之后绝对不能有任何字符**（包括空格、换行、解释、确认语）。任何"我已经/接下来/好的"等后续文字会被截掉，调用作废。',
   '6. **每次回复最多只能发一个 `tool_call` 代码块**。宿主解析器在第一个 fence 闭合后会立即丢弃之后所有内容。需要多个工具时，分多轮发起，每轮等待真实的工具结果回填后再发下一个。',
-  '7. **fence 之前可以写简短解释**，但不要在 fence 之内/之后写任何说明。',
+  '7. **fence 之前禁止写任何文字或解释**。tool_call 代码块必须是回复的**第一部分**（紧跟 `<|助手|>` 之后），不要在它前面加"我来调用"等引导语。',
   '8. **禁止凭空叙述工具的执行结果**（这是最严重的错误，会直接损害用户信任）。',
   '   - 真实的工具输出只会以 `' + MARKER_TOOL + '` 开头、`' + MARKER_END_TOOL + '` 结尾的块的形式由宿主回填给你。',
   '   - 如果当前对话历史中还没有 `' + MARKER_TOOL + '` 块，说明工具还未运行过。',
@@ -257,8 +257,6 @@ function buildDynamicExamples(tools) {
   const first = toolNames[0];
   examples.push('示例 A — 单工具调用（' + first + '）：');
   examples.push('');
-  examples.push('我来调用 ' + first + ' 工具。');
-  examples.push('');
   examples.push(TOOL_CALL_FENCE_OPEN);
   examples.push('{"name": "' + first + '", "arguments": {}}');
   examples.push(TOOL_CALL_FENCE_CLOSE);
@@ -270,8 +268,6 @@ function buildDynamicExamples(tools) {
     const label = String.fromCharCode(65 + idx); // B, C, ...
     examples.push('');
     examples.push('示例 ' + label + ' — 读取文件（' + readName + '）：');
-    examples.push('');
-    examples.push('我来读一下项目的入口文件。');
     examples.push('');
     examples.push(TOOL_CALL_FENCE_OPEN);
     examples.push('{"name": "' + readName + '", "arguments": {"path": "src/index.js"}}');
@@ -286,8 +282,6 @@ function buildDynamicExamples(tools) {
     examples.push('');
     examples.push('示例 ' + label + ' — 执行命令（' + bashName + '）：');
     examples.push('');
-    examples.push('我来运行单元测试。');
-    examples.push('');
     examples.push(TOOL_CALL_FENCE_OPEN);
     examples.push('{"name": "' + bashName + '", "arguments": {"command": "npm run test"}}');
     examples.push(TOOL_CALL_FENCE_CLOSE);
@@ -301,8 +295,6 @@ function buildDynamicExamples(tools) {
     examples.push('');
     examples.push('示例 ' + label + ' — 写入文件（' + writeName + '）：');
     examples.push('');
-    examples.push('我来创建一个配置文件。');
-    examples.push('');
     examples.push(TOOL_CALL_FENCE_OPEN);
     examples.push('{"name": "' + writeName + '", "arguments": {"path": "config.json", "content": "{\\"port\\": 3000}"}}');
     examples.push(TOOL_CALL_FENCE_CLOSE);
@@ -315,8 +307,6 @@ function buildDynamicExamples(tools) {
     const label = String.fromCharCode(65 + idx);
     examples.push('');
     examples.push('示例 ' + label + ' — 搜索文件（' + searchName + '）：');
-    examples.push('');
-    examples.push('我来搜索所有 JavaScript 文件。');
     examples.push('');
     examples.push(TOOL_CALL_FENCE_OPEN);
     examples.push('{"name": "' + searchName + '", "arguments": {"pattern": "**/*.js"}}');

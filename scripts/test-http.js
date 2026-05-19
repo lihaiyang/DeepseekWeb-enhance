@@ -112,7 +112,7 @@ function check(name, cond, info) {
   check('non-stream status 200', r2.status === 200);
   check('non-stream object', r2.json.object === 'chat.completion');
   const msg = r2.json.choices && r2.json.choices[0] && r2.json.choices[0].message;
-  check('non-stream message.content aggregated', msg && msg.content === 'starting...');
+  check('non-stream message.content is null when tool_calls present', msg && msg.content === null);
   check('non-stream tool_calls collected', msg && Array.isArray(msg.tool_calls) && msg.tool_calls.length === 1);
   check('non-stream tool_calls args aggregated',
     msg && msg.tool_calls[0].function.arguments === '{"path":"."}');

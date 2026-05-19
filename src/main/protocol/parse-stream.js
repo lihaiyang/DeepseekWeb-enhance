@@ -67,6 +67,7 @@ function createTranslator(opts) {
   let toolBuffer = '';
   let toolCallIndex = 0;
   let toolCallsEmitted = false;
+  let pendingPreFenceContent = '';
   let started = false;
   let ended = false;
 
@@ -195,6 +196,10 @@ function createTranslator(opts) {
     } catch (_) {
       // Don't silently swallow malformed output — surface it as content so
       // the user / debugger sees what the model produced.
+      if (pendingPreFenceContent) {
+        emitContent(pendingPreFenceContent);
+        pendingPreFenceContent = '';
+      }
       emitContent('\n' + fenceOpen + '\n' + raw + '\n' + fenceClose + '\n');
       return;
     }
@@ -247,6 +252,7 @@ function createTranslator(opts) {
     }
     toolCallIndex++;
     toolCallsEmitted = true;
+    pendingPreFenceContent = '';
   }
 
   function drainIdle(isFinal) {
@@ -274,19 +280,22 @@ function createTranslator(opts) {
         return;
       }
 
-      // Emit everything before the marker, stripping the separating \n.
+      // Text before the marker, stripping the separating \n.
       let before = buffer.slice(0, nextIdx);
       if (before.endsWith('\n')) before = before.slice(0, -1);
-      emitContent(before);
 
       if (useStop) {
         // Model started hallucinating the next dialog block. Drop the rest.
+        emitContent(before);
         buffer = '';
         state = STATE_TRUNCATED;
         return;
       }
 
-      // Otherwise it's a tool-call fence — enter TOOL_CALL state.
+      // Tool-call fence — hold back pre-fence text so pi doesn't see
+      // content + tool_calls in the same message. Only emit it if the
+      // tool-call JSON fails to parse (fallback below).
+      if (before) pendingPreFenceContent = before;
       let consumed = nextIdx + fenceOpen.length;
       if (buffer[consumed] === '\r') consumed++;
       if (buffer[consumed] === '\n') consumed++;
@@ -350,6 +359,10 @@ function createTranslator(opts) {
       if (state !== STATE_TRUNCATED) {
         drainIdle(true);
         drainToolCall(true);
+      }
+      if (pendingPreFenceContent) {
+        emitContent(pendingPreFenceContent);
+        pendingPreFenceContent = '';
       }
       emit(chunk({}, toolCallsEmitted ? 'tool_calls' : 'stop'));
     },

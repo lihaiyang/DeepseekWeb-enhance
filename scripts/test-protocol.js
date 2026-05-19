@@ -73,7 +73,7 @@ function check(name, cond, info) {
     t.end();
   });
   const tcs = toolCalls(chunks);
-  check('one-shot tool: content preserved', deltaContent(chunks) === '要列出文件。');
+  check('one-shot tool: no pre-fence content leaked', deltaContent(chunks) === '');
   check('one-shot tool: count', tcs.length === 1);
   check('one-shot tool: name', tcs[0] && tcs[0].name === 'ls');
   check('one-shot tool: args', tcs[0] && tcs[0].arguments === '{"path":"."}');
@@ -249,7 +249,7 @@ function check(name, cond, info) {
   check('hallucination: tool_call still parsed', tcs.length === 1 && tcs[0].name === 'write');
   check('hallucination: finish_reason tool_calls', finishReason(chunks) === 'tool_calls');
   const content = deltaContent(chunks);
-  check('hallucination: opener kept', content.indexOf('我来写文件。') !== -1);
+  check('hallucination: pre-fence text dropped (tool_call present)', content.indexOf('我来写文件。') === -1);
   check('hallucination: fake tool result dropped', content.indexOf('Successfully wrote') === -1);
   check('hallucination: fake assistant line dropped', content.indexOf('文件已创建') === -1);
   check('hallucination: marker itself dropped', content.indexOf('[工具结果') === -1);

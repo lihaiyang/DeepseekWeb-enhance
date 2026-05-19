@@ -93,11 +93,13 @@ function aggregateChunks(chunks, model) {
     if (choice.finish_reason) finishReason = choice.finish_reason;
   }
 
-  const message = { role: 'assistant', content: content || null };
+  const message = { role: 'assistant', content: null };
   if (reasoning) message.reasoning_content = reasoning;
   if (toolCallsByIndex.size) {
     message.tool_calls = Array.from(toolCallsByIndex.values()).sort((a, b) => a.index - b.index);
     for (const tc of message.tool_calls) delete tc.index;
+  } else {
+    message.content = content || null;
   }
 
   return {
