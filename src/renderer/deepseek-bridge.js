@@ -99,6 +99,7 @@
   bridge.onRun(function (payload) {
     var requestId = payload && payload.requestId;
     var prompt = (payload && payload.prompt) || '';
+    var isContinuation = !!(payload && payload.isContinuation);
     if (typeof requestId !== 'number') return;
 
     // Set mode before sending the request so DeepSeekClient can read it.
@@ -116,9 +117,12 @@
     }
 
     currentRequestId = requestId;
-    log('INFO', 'run reqId=' + requestId + ' promptLen=' + prompt.length);
+    var tag = isContinuation ? 'cont' : 'run';
+    log('INFO', tag + ' reqId=' + requestId + ' promptLen=' + prompt.length);
 
-    c.sendRaw(prompt).then(function () {
+    var sendPromise = isContinuation ? c.sendContinuation(prompt) : c.sendRaw(prompt);
+
+    sendPromise.then(function () {
       log('INFO', 'end reqId=' + requestId);
       try { bridge.end(requestId); } catch (_) {}
       if (currentRequestId === requestId) currentRequestId = null;

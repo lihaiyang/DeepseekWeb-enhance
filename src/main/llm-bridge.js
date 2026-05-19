@@ -31,11 +31,21 @@
  */
 
 const { ipcMain } = require('electron');
-const { buildPrompt } = require('./protocol/build-prompt');
+const { buildPrompt, buildContinuationPrompt } = require('./protocol/build-prompt');
 const { createTranslator } = require('./protocol/parse-stream');
 
 const STALL_TIMEOUT_MS = 5000;       // 流卡死阈值：相邻 chunk 间隔超过此值即视为失败
 const STALL_MESSAGE = '模型响应超时（5s 无新内容），本次回复中断';
+
+// Session constants — 控制同一个 DeepSeek 聊天窗口的复用
+// DeepSeek 上下文窗口 1M tokens，输入框单次最大 ~500k tokens
+// 按 3 chars/token 保守估算：1,500,000 chars ≈ 500k tokens prompt
+// 加上模型回复占用，总上下文 ≈ 1M tokens，留有余量
+const MAX_SESSION_CHARS = 1500000;
+function estimateTokens(text) {
+  if (!text) return 0;
+  return Math.ceil(text.length / 3);
+}
 
 class LlmBridge {
   constructor(opts) {
@@ -48,6 +58,9 @@ class LlmBridge {
     this._getMode = (opts && typeof opts.getMode === 'function') ? opts.getMode : null;
     this._log = (opts && typeof opts.log === 'function') ? opts.log : null;
     this._stallTimeoutMs = (opts && Number.isFinite(opts.stallTimeoutMs)) ? opts.stallTimeoutMs : STALL_TIMEOUT_MS;
+
+    // Session state — 同一个 DeepSeek 聊天窗口的续接追踪
+    this._session = { messageCount: 0, totalChars: 0, active: false };
 
     ipcMain.on('llm:thinking', (_e, payload) => this._onIncoming('thinking', payload));
     ipcMain.on('llm:content',  (_e, payload) => this._onIncoming('content', payload));
@@ -109,14 +122,47 @@ class LlmBridge {
     }
 
     const body = opts.body || {};
+    const messages = Array.isArray(body.messages) ? body.messages : [];
     const requestId = ++this._counter;
     let prompt;
-    try {
-      const template = this._getTemplate ? this._getTemplate() : undefined;
-      prompt = buildPrompt(body, { template });
-    } catch (err) {
-      this._finishRequest(null, reject, err);
-      return;
+    let isContinuation = false;
+
+    // ─── 会话续接判断 ───────────────────────────────────────────
+    // 条件：session 活跃 + 未超 token 上限 + 本轮消息数 > 上轮消息数
+    if (this._session.active && this._session.totalChars < MAX_SESSION_CHARS) {
+      if (messages.length > this._session.messageCount) {
+        isContinuation = true;
+      }
+    }
+
+    if (isContinuation) {
+      // 续接：只格式化增量消息，不重复注入约束/工具/协议
+      try {
+        const startIndex = this._session.messageCount;
+        prompt = buildContinuationPrompt(messages, startIndex);
+      } catch (err) {
+        // 增量构建失败 → 降级为完整 prompt 重建 + 新建会话
+        this._logEvent('llm:continuation-fallback', { error: err.message });
+        isContinuation = false;
+        this._session = { messageCount: 0, totalChars: 0, active: false };
+        try {
+          const template = this._getTemplate ? this._getTemplate() : undefined;
+          prompt = buildPrompt(body, { template });
+        } catch (err2) {
+          this._finishRequest(null, reject, err2);
+          return;
+        }
+      }
+    } else {
+      // 新会话：完整 prompt 构建，重置会话追踪
+      this._session = { messageCount: 0, totalChars: 0, active: false };
+      try {
+        const template = this._getTemplate ? this._getTemplate() : undefined;
+        prompt = buildPrompt(body, { template });
+      } catch (err) {
+        this._finishRequest(null, reject, err);
+        return;
+      }
     }
 
     const model = body.model || 'deepseek-via-web';
@@ -131,6 +177,8 @@ class LlmBridge {
       aborted: false,
       prompt,
       model,
+      isContinuation,
+      _body: body,  // 保留原始 body 供 _finalizeAttempt 更新 session
     };
 
     if (handle.signal) {
@@ -198,9 +246,16 @@ class LlmBridge {
     this._logEvent('llm:attempt', {
       requestId: handle.requestId,
       promptLen: handle.prompt.length,
+      isContinuation: handle.isContinuation,
+      sessionChars: this._session.totalChars,
     });
     const mode = this._getMode ? this._getMode() : 'expert';
-    this._webContents.send('llm:run', { requestId: handle.requestId, prompt: handle.prompt, mode: mode });
+    this._webContents.send('llm:run', {
+      requestId: handle.requestId,
+      prompt: handle.prompt,
+      mode: mode,
+      isContinuation: handle.isContinuation,
+    });
   }
 
   _armStallTimer(state) {
@@ -237,6 +292,23 @@ class LlmBridge {
       contentLen, toolCallsLen, reasoningLen,
       hadError, errorMessage,
     });
+
+    // 更新会话追踪
+    if (!hadError) {
+      const body = state.handle._body;
+      const messages = (body && Array.isArray(body.messages)) ? body.messages : [];
+      this._session.messageCount = messages.length;
+      this._session.totalChars += state.handle.prompt.length;
+      this._session.active = true;
+      this._logEvent('llm:session', {
+        messageCount: this._session.messageCount,
+        totalChars: this._session.totalChars,
+        estimatedTokens: estimateTokens(String(this._session.totalChars)),
+      });
+    } else if (errorMessage === 'stalled') {
+      // 卡死 → 让下次请求降级为完整 prompt 重建
+      this._session.active = false;
+    }
 
     if (state.handle.aborted) {
       this._finishRequest(state.handle, state.handle.reject, new Error('aborted'));

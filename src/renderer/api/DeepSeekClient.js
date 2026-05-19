@@ -346,6 +346,71 @@
     });
   };
 
+  /**
+   * Send a continuation prompt in the SAME DeepSeek chat window.
+   * Skips _clickNewChatButton() — the chat session is already active.
+   * Still ensures mode/search toggles are correct (idempotent checks).
+   */
+  DeepSeekClient.prototype.sendContinuation = function (prompt) {
+    if (this._pending) {
+      _log('WARN', 'sendContinuation rejected: already pending');
+      return Promise.reject(new Error('已有请求正在进行中'));
+    }
+    var self = this;
+    this._pending = true;
+    this._requestId++;
+    var reqId = this._requestId;
+    var tStart = Date.now();
+
+    _log('INFO', 'sendContinuation reqId=' + reqId + ' promptLen=' + prompt.length);
+
+    var prevToolHint = window.__dsAgentToolHint;
+    window.__dsAgentToolHint = '';
+
+    var adapter = window.__dsAgentAdapter;
+    if (!adapter) {
+      this._pending = false;
+      window.__dsAgentToolHint = prevToolHint;
+      _logError('sendContinuation: adapter missing');
+      return Promise.reject(new Error('DeepSeek 尚未就绪，请点击终端右上角"显示 DeepSeek"按钮，登录后稍候重试。'));
+    }
+
+    this._takeoverAdapterCallbacks(adapter);
+
+    // No _clickNewChatButton() — reuse the active chat session.
+    // _ensureModeAndNoSearch is idempotent (only clicks when needed),
+    // keeping < 600ms overhead.
+    return _ensureModeAndNoSearch().then(function () {
+      return new Promise(function (resolve, reject) {
+        var settled = false;
+        function settle(err, result) {
+          if (settled) return;
+          settled = true;
+          self._restoreAdapterCallbacks();
+          window.__dsAgentToolHint = prevToolHint;
+          self._pending = false;
+          var elapsed = Date.now() - tStart;
+          if (err) { _logError('sendContinuation failed reqId=' + reqId + ' elapsed=' + elapsed + 'ms', err); reject(err); }
+          else     { _log('INFO', 'sendContinuation done reqId=' + reqId + ' len=' + (result ? result.length : 0) + ' elapsed=' + elapsed + 'ms'); resolve(result); }
+        }
+
+        var timeout = setTimeout(function () {
+          _logError('sendContinuation timeout reqId=' + reqId);
+          self.abort();
+          settle(new Error('等待 AI 响应超时（30分钟）'));
+        }, STREAM_TIMEOUT_MS);
+
+        adapter.onEnd(function (full) { clearTimeout(timeout); settle(null, full); });
+
+        adapter.sendMessage(prompt).then(function (full) {
+          if (!settled) { clearTimeout(timeout); settle(null, full); }
+        }).catch(function (err) {
+          if (!settled) { clearTimeout(timeout); settle(err); }
+        });
+      });
+    });
+  };
+
   DeepSeekClient.prototype._takeoverAdapterCallbacks = function (adapter) {
     this._savedThinking = adapter._thinkingCallbacks ? adapter._thinkingCallbacks.slice() : [];
     this._savedContent  = adapter._contentCallbacks  ? adapter._contentCallbacks.slice()  : [];
