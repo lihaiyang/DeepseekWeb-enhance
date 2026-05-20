@@ -34,4 +34,10 @@ contextBridge.exposeInMainWorld('dsAgent', {
     set:       (v) => ipcRenderer.send('mode:set', v),
     onChanged: (cb) => ipcRenderer.on('mode:changed', (_e, v) => cb(v)),
   },
+  contextMenu: {
+    show: (x, y, selection) => ipcRenderer.send('contextmenu:show', { x, y, selection }),
+    onAction: (cb) => {
+      ipcRenderer.on('contextmenu:action', (_e, action) => cb(action));
+    },
+  },
 });

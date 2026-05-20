@@ -44,6 +44,35 @@
   term.open(document.getElementById('term'));
   try { fit.fit(); } catch (_) {}
 
+  // ── right-click context menu ───────────────────────────────────
+  (function wireContextMenu() {
+    if (!dsAgent.contextMenu) return;
+    document.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      // Inside xterm: use xterm's own selection (bypasses DOM)
+      const inTerm = e.target.closest('#term');
+      const sel = inTerm ? term.getSelection() : window.getSelection().toString();
+      dsAgent.contextMenu.show(e.clientX, e.clientY, sel);
+    });
+    dsAgent.contextMenu.onAction((action) => {
+      switch (action) {
+        case 'copy': {
+          const sel = term.getSelection() || window.getSelection().toString();
+          if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+          break;
+        }
+        case 'paste':
+          navigator.clipboard.readText()
+            .then((text) => { if (text) dsAgent.pty.write(text); })
+            .catch(() => {});
+          break;
+        case 'selectAll':
+          term.selectAll();
+          break;
+      }
+    });
+  })();
+
   // ── workspace controls ─────────────────────────────────────────
   const btnWorkspace = document.getElementById('btn-workspace');
   const workspaceLabel = document.getElementById('workspace-label');
@@ -104,7 +133,7 @@
   const btnDs = document.getElementById('btn-deepseek');
   let deepseekVisible = false;
   function applyDsButton() {
-    btnDs.textContent = deepseekVisible ? '显示终端' : '显示网页';
+    btnDs.textContent = deepseekVisible ? '终端' : '网页';
   }
   applyDsButton();
   // Sync initial state from main (main may have shown the view before this

@@ -74,6 +74,32 @@ function setMode(v) {
   return valid;
 }
 
+// ─── F12 DevTools ────────────────────────────────────────────────────
+function enableDevToolsShortcut(wc) {
+  wc.on('before-input-event', (event, input) => {
+    if (input.key === 'F12' && input.type === 'keyDown') {
+      wc.toggleDevTools();
+    }
+  });
+}
+
+// ─── Context menu ────────────────────────────────────────────────────
+function showContextMenu(webContents, params) {
+  const hasSelection = params.selectionText && params.selectionText.trim().length > 0;
+  const canCopy = hasSelection || params.editFlags.canCopy;
+  const template = [
+    { label: '复制', enabled: canCopy, accelerator: 'CmdOrCtrl+C',
+      click: () => { if (hasSelection) webContents.copy(); } },
+    { label: '粘贴', enabled: params.editFlags.canPaste, accelerator: 'CmdOrCtrl+V',
+      click: () => webContents.paste() },
+    { type: 'separator' },
+    { label: '全选', enabled: params.editFlags.canSelectAll, accelerator: 'CmdOrCtrl+A',
+      click: () => webContents.selectAll() },
+  ];
+  const menu = Menu.buildFromTemplate(template);
+  menu.popup({ window: BrowserWindow.fromWebContents(webContents) });
+}
+
 // ─── Logging ─────────────────────────────────────────────────────────
 function getLogPath() {
   const dir = path.join(os.homedir(), '.ds-agent', 'log');
@@ -174,6 +200,11 @@ function createMainWindow() {
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'terminal', 'index.html'));
 
   if (IS_DEV) mainWindow.webContents.openDevTools({ mode: 'detach' });
+  enableDevToolsShortcut(mainWindow.webContents);
+
+  // Context menu is handled by the renderer (terminal.js) so xterm
+  // selection can be captured — webContents.context-menu fires only
+  // for DOM-level selection, which xterm bypasses.
 
   mainWindow.on('resize', () => syncDsViewBounds());
   mainWindow.on('close', (e) => {
@@ -199,6 +230,11 @@ function createDeepSeekView() {
 
   dsView.webContents.on('did-finish-load', () => {
     log('deepseek', { event: 'did-finish-load', url: dsView.webContents.getURL() });
+  });
+
+  enableDevToolsShortcut(dsView.webContents);
+  dsView.webContents.on('context-menu', (e, params) => {
+    showContextMenu(dsView.webContents, params);
   });
 }
 
@@ -254,6 +290,10 @@ function openPromptEditor() {
   });
   promptEditorWindow.loadFile(path.join(__dirname, '..', 'renderer', 'prompt-editor', 'index.html'));
   if (IS_DEV) promptEditorWindow.webContents.openDevTools({ mode: 'detach' });
+  enableDevToolsShortcut(promptEditorWindow.webContents);
+  promptEditorWindow.webContents.on('context-menu', (e, params) => {
+    showContextMenu(promptEditorWindow.webContents, params);
+  });
   promptEditorWindow.on('closed', () => { promptEditorWindow = null; });
 }
 
@@ -264,7 +304,7 @@ function createTray() {
   const menu = Menu.buildFromTemplate([
     { label: '显示主窗口', click: () => mainWindow && mainWindow.show() },
     { label: '显示 DeepSeek', click: () => { mainWindow && mainWindow.show(); setDeepseekVisible(true); } },
-    { label: '显示终端',     click: () => setDeepseekVisible(false) },
+    { label: '终端',     click: () => setDeepseekVisible(false) },
     { type: 'separator' },
     { label: '退出', click: () => { isQuitting = true; tray.destroy(); tray = null; app.quit(); } },
   ]);
@@ -327,6 +367,24 @@ function wireIpc() {
   ipcMain.handle('prompt:reset', () => {
     setCurrentPromptTemplate('');
     return true;
+  });
+
+  // Context menu for xterm (non-DOM selection)
+  ipcMain.on('contextmenu:show', (event, payload) => {
+    const wc = event.sender;
+    const hasSelection = payload && typeof payload.selection === 'string' && payload.selection.length > 0;
+    const template = [
+      { label: '复制', enabled: hasSelection,
+        click: () => wc.send('contextmenu:action', 'copy') },
+      { type: 'separator' },
+      { label: '粘贴',
+        click: () => wc.send('contextmenu:action', 'paste') },
+      { label: '全选',
+        click: () => wc.send('contextmenu:action', 'selectAll') },
+    ];
+    const menu = Menu.buildFromTemplate(template);
+    const win = BrowserWindow.fromWebContents(wc);
+    menu.popup({ window: win, x: payload.x, y: payload.y });
   });
 
   // Agent mode toggle (expert / quick)
