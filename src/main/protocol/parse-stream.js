@@ -24,6 +24,11 @@ const STATE_TRUNCATED = 2;
 
 const { TOOL_CALL_FENCE_OPEN, TOOL_CALL_FENCE_CLOSE } = require('./build-prompt');
 
+// Alternative fence patterns the model might use instead of ```tool_call.
+// We detect any of these, parse the JSON content, and validate it really
+// is a tool call before treating it as one.
+const ALT_TOOL_FENCES = ['```tool_call', '```toolcall'];
+
 // Line-prefix tokens that, if produced by the model, mean it has started
 // hallucinating the next turn of the dialog script (a `<|工具|>` block,
 // the next `<|助手|>` line, etc). When we hit one we cut the stream off
@@ -51,6 +56,57 @@ function generateId(prefix) {
   return prefix + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+/**
+ * Try to parse `raw` as JSON, applying common repairs on failure.
+ * Returns the parsed object, or null if all repairs fail.
+ */
+function repairJson(raw) {
+  // Attempt 1: raw parse
+  try { return JSON.parse(raw); } catch (_) {}
+
+  let fixed = raw;
+
+  // Attempt 2: strip trailing commas before } or ]
+  fixed = fixed.replace(/,(\s*[}\]])/g, '$1');
+  try { return JSON.parse(fixed); } catch (_) {}
+
+  // Attempt 3: replace curly/smart quotes with straight double quotes
+  var CQ_LEFT = String.fromCharCode(0x201C);
+  var CQ_RIGHT = String.fromCharCode(0x201D);
+  fixed = fixed.split(CQ_LEFT).join('"').split(CQ_RIGHT).join('"');
+  try { return JSON.parse(fixed); } catch (_) {}
+
+  // Attempt 4: fix unbalanced braces / brackets.
+  // The model sometimes cuts off trailing } or ], leaving the JSON
+  // unparseable.  We count openings vs closings (ignoring character
+  // inside string literals for the common shallow-nesting case) and
+  // append the missing closings at the end.
+  {
+    var openBraces = 0, closeBraces = 0;
+    var openBrackets = 0, closeBrackets = 0;
+    var inString = false, prevChar = '';
+    for (var i = 0; i < fixed.length; i++) {
+      var ch = fixed[i];
+      // Toggle inString only on unescaped double-quotes
+      if (ch === '"' && prevChar !== '\\\\') { inString = !inString; }
+      else if (!inString) {
+        if (ch === '{')  openBraces++;
+        else if (ch === '}') closeBraces++;
+        else if (ch === '[') openBrackets++;
+        else if (ch === ']') closeBrackets++;
+      }
+      prevChar = ch;
+    }
+    if (openBraces > closeBraces || openBrackets > closeBrackets) {
+      for (var b = 0; b < openBraces - closeBraces; b++) fixed += '}';
+      for (var a = 0; a < openBrackets - closeBrackets; a++) fixed += ']';
+      try { return JSON.parse(fixed); } catch (_) {}
+    }
+  }
+
+  return null;
+}
+
 function createTranslator(opts) {
   const id = (opts && opts.id) || generateId('chatcmpl');
   const model = (opts && opts.model) || 'deepseek-via-web';
@@ -68,6 +124,7 @@ function createTranslator(opts) {
   let toolCallIndex = 0;
   let toolCallsEmitted = false;
   let pendingPreFenceContent = '';
+  let matchedFenceOpen = fenceOpen;
   let started = false;
   let ended = false;
 
@@ -103,7 +160,10 @@ function createTranslator(opts) {
 
   /**
    * Find a fence string at a line start (preceded by \n or buffer start)
-   * and followed by \n/\r (i.e. the fence occupies its own line).
+   * and followed by \n/\r (i.e. the fence occupies its own line).  Trailing
+   * whitespace after the fence identifier (e.g. "```tool_call ") is skipped
+   * so the model's occasional extra spaces don't break detection.
+   *
    * If atEndOk is true, also accept the fence at the very end of buf
    * (no trailing newline) — used when the stream has already ended.
    * Returns -1 if no qualifying fence is found.
@@ -114,13 +174,18 @@ function createTranslator(opts) {
       const idx = buf.indexOf(fence, from);
       if (idx === -1) return -1;
       const atLineStart = idx === 0 || buf[idx - 1] === '\n';
-      const after = idx + fence.length;
+      if (!atLineStart) { from = idx + 1; continue; }
+      // Skip trailing whitespace after the fence identifier
+      let after = idx + fence.length;
+      while (after < buf.length && (buf[after] === ' ' || buf[after] === '\t')) {
+        after++;
+      }
       const next = buf[after];
       const completeLine =
         next === '\n' ||
         next === '\r' ||
         (atEndOk && next === undefined);
-      if (atLineStart && completeLine) return idx;
+      if (completeLine) return idx;
       from = idx + 1;
     }
     return -1;
@@ -150,13 +215,14 @@ function createTranslator(opts) {
 
   /**
    * Is `tail` a strict prefix (or full match shorter than the next char)
-   * of any marker we need to detect — the tool-call fence or a
-   * hallucination stop sequence? Used to keep a partial-prefix safely in
-   * the buffer until the next delta lands.
+   * of any marker we need to detect — any tool-call fence variant or a
+   * hallucination stop sequence?
    */
   function tailIsMarkerPrefix(tail) {
     if (tail.length === 0) return false;
-    if (tail.length <= fenceOpen.length && fenceOpen.startsWith(tail)) return true;
+    for (const f of ALT_TOOL_FENCES) {
+      if (tail.length <= f.length && f.startsWith(tail)) return true;
+    }
     for (const seq of HALLUCINATION_STOP_SEQUENCES) {
       if (tail.length <= seq.length && seq.startsWith(tail)) return true;
     }
@@ -165,45 +231,42 @@ function createTranslator(opts) {
 
   /**
    * In IDLE state we may have a partial marker prefix sitting at the
-   * buffer tail (e.g. "\n```tool_ca" or "\n[工"). Return the highest
-   * index we can safely flush as content without risking emitting half of
-   * a marker.
+   * buffer tail. Return the highest index we can safely flush as content
+   * without risking emitting half of a marker.
    */
   function safeIdleEmitEnd() {
     const lastNl = buffer.lastIndexOf('\n');
     const tailStart = lastNl === -1 ? 0 : lastNl + 1;
     const tail = buffer.slice(tailStart);
     if (tailIsMarkerPrefix(tail)) {
-      // keep the \n and the partial marker prefix
       return lastNl === -1 ? 0 : lastNl;
     }
-    // hold back a trailing \n so we can strip it cleanly if a marker follows
     if (tail.length === 0 && lastNl === buffer.length - 1 && lastNl !== -1) {
       return lastNl;
     }
-    // also defend against trailing \r before a possible \n on next chunk
     if (buffer.endsWith('\r')) return buffer.length - 1;
     return buffer.length;
   }
 
   function flushToolBuffer() {
     const raw = toolBuffer.trim();
+    const currentFence = matchedFenceOpen;
     toolBuffer = '';
+    matchedFenceOpen = fenceOpen;
     if (!raw) return;
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (_) {
-      // Don't silently swallow malformed output — surface it as content so
-      // the user / debugger sees what the model produced.
+
+    // Parse with repair fallback
+    let parsed = repairJson(raw);
+    if (!parsed) {
       if (pendingPreFenceContent) {
         emitContent(pendingPreFenceContent);
         pendingPreFenceContent = '';
       }
-      emitContent('\n' + fenceOpen + '\n' + raw + '\n' + fenceClose + '\n');
+      emitContent('\n' + currentFence + '\n' + raw + '\n' + fenceClose + '\n');
       return;
     }
-    // Salvage common shape mistakes from the model:
+
+    // Salvage common shape mistakes from the model (run BEFORE validation):
     //   {"write": {"path": "..."}}        →  {name: "write", arguments: {...}}
     //   {"name": "write", "path": "..."}  →  {name: "write", arguments: {path: ...}}
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -217,7 +280,6 @@ function createTranslator(opts) {
           }
         }
       } else if (parsed.arguments === undefined) {
-        // Flatten args sitting at the top level alongside `name`.
         const flat = Object.assign({}, parsed);
         delete flat.name;
         delete flat.id;
@@ -226,12 +288,41 @@ function createTranslator(opts) {
         }
       }
     }
+
+    // Validate AFTER salvage: must have a non-empty "name"
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
+        typeof parsed.name !== 'string' || !parsed.name.trim()) {
+      if (pendingPreFenceContent) {
+        emitContent(pendingPreFenceContent);
+        pendingPreFenceContent = '';
+      }
+      emitContent('\n' + currentFence + '\n' + raw + '\n' + fenceClose + '\n');
+      return;
+    }
+
     const name = typeof parsed.name === 'string' ? parsed.name : '';
     let args = parsed.arguments;
     if (args == null) args = {};
+
+    // If the model wrote arguments as a plain string (e.g. "ls" instead of
+    // {"command":"ls"}), try to parse it as JSON.  If it fails, the args
+    // are irrecoverable — drop the tool call and emit the raw text as
+    // content so the user can see what the model actually produced.
+    if (typeof args === 'string') {
+      try { args = JSON.parse(args); }
+      catch (_) {
+        if (pendingPreFenceContent) {
+          emitContent(pendingPreFenceContent);
+          pendingPreFenceContent = '';
+        }
+        emitContent('\n' + currentFence + '\n' + raw + '\n' + fenceClose + '\n');
+        return;
+      }
+    }
     if (typeof args !== 'string') {
       try { args = JSON.stringify(args); } catch (_) { args = '{}'; }
     }
+
     const callId = (typeof parsed.id === 'string' && parsed.id) || generateId('call');
 
     emit(chunk({
@@ -253,13 +344,22 @@ function createTranslator(opts) {
     toolCallIndex++;
     toolCallsEmitted = true;
     pendingPreFenceContent = '';
+    matchedFenceOpen = fenceOpen;
   }
 
   function drainIdle(isFinal) {
     while (state === STATE_IDLE) {
-      const fenceIdx = findFenceLine(buffer, fenceOpen, false);
+      // Find the earliest tool-call fence among all supported variants.
+      let fenceIdx = -1;
+      matchedFenceOpen = fenceOpen;
+      for (const f of ALT_TOOL_FENCES) {
+        const idx = findFenceLine(buffer, f, false);
+        if (idx !== -1 && (fenceIdx === -1 || idx < fenceIdx)) {
+          fenceIdx = idx;
+          matchedFenceOpen = f;
+        }
+      }
       const stopIdx = findStopSequence(buffer);
-      // Whichever comes first wins. -1 means "not found".
       let useStop = false;
       let nextIdx = -1;
       if (fenceIdx !== -1 && stopIdx !== -1) {
@@ -285,18 +385,19 @@ function createTranslator(opts) {
       if (before.endsWith('\n')) before = before.slice(0, -1);
 
       if (useStop) {
-        // Model started hallucinating the next dialog block. Drop the rest.
         emitContent(before);
         buffer = '';
         state = STATE_TRUNCATED;
         return;
       }
 
-      // Tool-call fence — hold back pre-fence text so pi doesn't see
-      // content + tool_calls in the same message. Only emit it if the
-      // tool-call JSON fails to parse (fallback below).
+      // Tool-call fence — hold back pre-fence text
       if (before) pendingPreFenceContent = before;
-      let consumed = nextIdx + fenceOpen.length;
+      let consumed = fenceIdx + matchedFenceOpen.length;
+      // Skip trailing whitespace we already tolerated in findFenceLine
+      while (consumed < buffer.length && (buffer[consumed] === ' ' || buffer[consumed] === '\t')) {
+        consumed++;
+      }
       if (buffer[consumed] === '\r') consumed++;
       if (buffer[consumed] === '\n') consumed++;
       buffer = buffer.slice(consumed);
@@ -309,7 +410,6 @@ function createTranslator(opts) {
       const idx = findFenceLine(buffer, fenceClose, isFinal);
       if (idx === -1) {
         if (isFinal) {
-          // Stream ended without close fence — best-effort parse.
           toolBuffer += buffer;
           buffer = '';
           flushToolBuffer();
@@ -323,10 +423,6 @@ function createTranslator(opts) {
       if (buffer[consumed] === '\n') consumed++;
       buffer = buffer.slice(consumed);
       flushToolBuffer();
-      // Cap at one tool_call per turn: anything after a successful tool_call
-      // close fence (more fences, narration, fake tool markers, whatever) gets
-      // dropped. Malformed tool blocks fall back to IDLE so a subsequent
-      // valid block can still be parsed in the same turn.
       if (toolCallsEmitted) {
         buffer = '';
         state = STATE_TRUNCATED;
@@ -345,7 +441,7 @@ function createTranslator(opts) {
     },
     pushContent(delta) {
       if (ended) return;
-      if (state === STATE_TRUNCATED) return; // drop hallucinated tail
+      if (state === STATE_TRUNCATED) return;
       if (typeof delta !== 'string' || !delta) return;
       ensureStarted();
       buffer += delta;

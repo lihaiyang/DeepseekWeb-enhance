@@ -527,6 +527,143 @@ function check(name, cond, info) {
     prompt.indexOf('硬性规则') !== -1);
 }
 
+// ─── New: robustness / tolerance tests ──────────────────────────────────
+
+// 31. Fence with trailing spaces (model writes "```tool_call " with extra
+// whitespace after the language identifier).
+{
+  const chunks = collect(t => {
+    t.pushContent('```tool_call \n{"name":"ls","arguments":{}}\n```');
+    t.end();
+  });
+  const tcs = toolCalls(chunks);
+  check('trailing-space: tool_call detected', tcs.length === 1 && tcs[0].name === 'ls');
+  check('trailing-space: finish_reason tool_calls', finishReason(chunks) === 'tool_calls');
+}
+
+// 32. Alternative fence ```toolcall (no underscore) — model may forget the
+// underscore in the language identifier.
+{
+  const chunks = collect(t => {
+    t.pushContent('```toolcall\n{"name":"bash","arguments":{"command":"ls"}}\n```');
+    t.end();
+  });
+  const tcs = toolCalls(chunks);
+  check('alt-fence toolcall: detected', tcs.length === 1 && tcs[0].name === 'bash');
+  check('alt-fence toolcall: args parsed', tcs.length === 1 && tcs[0].arguments === '{"command":"ls"}');
+  check('alt-fence toolcall: finish_reason tool_calls', finishReason(chunks) === 'tool_calls');
+}
+
+// 33. ```toolcall fence with non-tool-call JSON — must be emitted as content,
+// not treated as a tool call.
+{
+  const chunks = collect(t => {
+    t.pushContent('```toolcall\n{"foo":"bar"}\n```');
+    t.end();
+  });
+  const tcs = toolCalls(chunks);
+  check('alt-fence + non-toolcall: no tool_call emitted', tcs.length === 0);
+  check('alt-fence + non-toolcall: content contains original fence',
+    deltaContent(chunks).indexOf('toolcall') !== -1,
+    JSON.stringify(deltaContent(chunks)));
+  check('alt-fence + non-toolcall: finish_reason stop', finishReason(chunks) === 'stop');
+}
+
+// 34. Arguments as a plain non-JSON string (model wrote "arguments":"ls"
+// instead of "arguments":{"command":"ls"}) — cannot be recovered, so the
+// tool call is dropped and the raw text is emitted as content.
+{
+  const chunks = collect(t => {
+    t.pushContent('```tool_call\n{"name":"bash","arguments":"ls"}\n```');
+    t.end();
+  });
+  const tcs = toolCalls(chunks);
+  check('args-plain-string: no tool call (args unrecoverable)', tcs.length === 0);
+  check('args-plain-string: raw text surfaced as content',
+    deltaContent(chunks).indexOf('"arguments":"ls"') !== -1,
+    JSON.stringify(deltaContent(chunks)));
+  check('args-plain-string: finish_reason stop', finishReason(chunks) === 'stop');
+}
+
+// 35. JSON with trailing comma (model added extra comma before closing brace).
+{
+  const chunks = collect(t => {
+    t.pushContent('```tool_call\n{"name":"read","arguments":{"path":"/tmp"},\n}\n```');
+    t.end();
+  });
+  const tcs = toolCalls(chunks);
+  check('trailing-comma: tool detected', tcs.length === 1 && tcs[0].name === 'read');
+  check('trailing-comma: args parsed', tcs.length === 1 && tcs[0].arguments === '{"path":"/tmp"}');
+}
+
+// 36. Curly/smart quotes used as JSON delimiters — the model might use
+// "smart" quotes (“ ”) instead of straight quotes for JSON field names.
+// The repair logic should replace them so JSON.parse succeeds.
+{
+  var LQ = String.fromCharCode(0x201C); // left curly "
+  var RQ = String.fromCharCode(0x201D); // right curly "
+  // Build JSON with curly quotes as field delimiters (invalid JSON)
+  var malformed =
+    '{' + LQ + 'name' + RQ + ':' + LQ + 'bash' + RQ + ',' +
+    LQ + 'arguments' + RQ + ':' +
+    '{' + LQ + 'command' + RQ + ':' + LQ + 'ls' + RQ + '}}';
+  // malformed = "name":"bash","arguments":{"command":"ls"}
+  var blob = '```toolcall\n' + malformed + '\n```';
+  var chunks = collect(t => {
+    t.pushContent(blob);
+    t.end();
+  });
+  var tcs = toolCalls(chunks);
+  check('smart-quotes: tool detected', tcs.length === 1 && tcs[0].name === 'bash');
+  var argsVal;
+  try { argsVal = JSON.parse(tcs[0].arguments); } catch (_) { argsVal = null; }
+  check('smart-quotes: arguments parseable',
+    argsVal !== null && argsVal.command === 'ls');
+}
+
+// 37. Missing closing brace — model cut off the final } or }}.
+{
+  // Missing one closing brace
+  {
+    const chunks = collect(t => {
+      t.pushContent('```tool_call\n{"name":"bash","arguments":{"command":"ls"}}\n```');
+      t.end();
+    });
+    const tcs = toolCalls(chunks);
+    check('missing-brace-1: tool detected', tcs.length === 1 && tcs[0].name === 'bash');
+    check('missing-brace-1: args recovered',
+      tcs.length === 1 && tcs[0].arguments === '{"command":"ls"}');
+  }
+  // Missing two closing braces (nested object)
+  {
+    const chunks = collect(t => {
+      t.pushContent('```tool_call\n{"name":"write","arguments":{"path":"/tmp/a","content":"hello"}\n```');
+      t.end();
+    });
+    const tcs = toolCalls(chunks);
+    check('missing-brace-2: tool detected', tcs.length === 1 && tcs[0].name === 'write');
+    const argsVal = tcs.length === 1 ? (function() {
+      try { return JSON.parse(tcs[0].arguments); } catch (_) { return null; }
+    })() : null;
+    check('missing-brace-2: args recovered',
+      argsVal !== null && argsVal.path === '/tmp/a' && argsVal.content === 'hello');
+  }
+  // Nested object with an array argument — missing one brace
+  {
+    const chunks = collect(t => {
+      t.pushContent('```toolcall\n{"name":"glob","arguments":{"pattern":"**/*.js","ignore":["node_modules",".git"]}}\n```');
+      t.end();
+    });
+    const tcs = toolCalls(chunks);
+    check('missing-brace-3: tool detected', tcs.length === 1 && tcs[0].name === 'glob');
+    const argsVal2 = tcs.length === 1 ? (function() {
+      try { return JSON.parse(tcs[0].arguments); } catch (_) { return null; }
+    })() : null;
+    check('missing-brace-3: args recovered',
+      argsVal2 !== null && Array.isArray(argsVal2.ignore) && argsVal2.ignore.length === 2);
+  }
+}
+
 console.log('');
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exit(fail === 0 ? 0 : 1);
