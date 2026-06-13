@@ -5,8 +5,8 @@
  *
  * DeepSeek 网页给我们的是分两路的纯文本：reasoning（思考）和 content（正文）。
  * 我们把 reasoning 转成 OpenAI 扩展字段 `delta.reasoning_content`，content
- * 则扫描出约定的工具调用代码块并切换成 `delta.tool_calls`，其余作为
- * `delta.content` 流式输出。
+ * 只有当 content 的最后一个有效块是单个 tool_call 代码块时，才切换成
+ * `delta.tool_calls`；正文中间嵌入的 tool_call 样式代码块一律作为普通内容输出。
  *
  * 工具调用块严格要求"行首单独成行"：
  *
@@ -14,12 +14,11 @@
  *   {"name":"...","arguments":{...}}
  *   ```
  *
- * 流式 buffer 处理时，尾部可能是 fence 开头的不完整前缀，需要保留到下一次
- * delta 才能判定。
+ * 如果流中出现行首 tool_call fence，需要暂存该候选块到流结束或直到它被
+ * 证明不是最终工具块；普通正文仍然流式输出。
  */
 
 const STATE_IDLE = 0;
-const STATE_TOOL_CALL = 1;
 const STATE_TRUNCATED = 2;
 
 const { TOOL_CALL_FENCE_OPEN, TOOL_CALL_FENCE_CLOSE } = require('./build-prompt');
@@ -120,11 +119,11 @@ function createTranslator(opts) {
   const created = Math.floor(Date.now() / 1000);
   let state = STATE_IDLE;
   let buffer = '';
-  let toolBuffer = '';
+  let candidateBuffer = '';
+  let candidateActive = false;
+  let toolFenceContentSeen = false;
   let toolCallIndex = 0;
   let toolCallsEmitted = false;
-  let pendingPreFenceContent = '';
-  let matchedFenceOpen = fenceOpen;
   let started = false;
   let ended = false;
 
@@ -214,14 +213,15 @@ function createTranslator(opts) {
   }
 
   /**
-   * Is `tail` a strict prefix (or full match shorter than the next char)
-   * of any marker we need to detect — any tool-call fence variant or a
-   * hallucination stop sequence?
+   * Is `tail` a strict prefix of a marker that must be held across chunks
+   * before it can safely be emitted as normal content?
    */
-  function tailIsMarkerPrefix(tail) {
+  function tailIsNormalMarkerPrefix(tail) {
     if (tail.length === 0) return false;
-    for (const f of ALT_TOOL_FENCES) {
-      if (tail.length <= f.length && f.startsWith(tail)) return true;
+    if (!toolFenceContentSeen) {
+      for (const f of ALT_TOOL_FENCES) {
+        if (tail.length <= f.length && f.startsWith(tail)) return true;
+      }
     }
     for (const seq of HALLUCINATION_STOP_SEQUENCES) {
       if (tail.length <= seq.length && seq.startsWith(tail)) return true;
@@ -234,11 +234,11 @@ function createTranslator(opts) {
    * buffer tail. Return the highest index we can safely flush as content
    * without risking emitting half of a marker.
    */
-  function safeIdleEmitEnd() {
+  function safeNormalEmitEnd() {
     const lastNl = buffer.lastIndexOf('\n');
     const tailStart = lastNl === -1 ? 0 : lastNl + 1;
     const tail = buffer.slice(tailStart);
-    if (tailIsMarkerPrefix(tail)) {
+    if (tailIsNormalMarkerPrefix(tail)) {
       return lastNl === -1 ? 0 : lastNl;
     }
     if (tail.length === 0 && lastNl === buffer.length - 1 && lastNl !== -1) {
@@ -248,23 +248,9 @@ function createTranslator(opts) {
     return buffer.length;
   }
 
-  function flushToolBuffer() {
-    const raw = toolBuffer.trim();
-    const currentFence = matchedFenceOpen;
-    toolBuffer = '';
-    matchedFenceOpen = fenceOpen;
-    if (!raw) return;
-
-    // Parse with repair fallback
+  function parseToolPayload(raw) {
     let parsed = repairJson(raw);
-    if (!parsed) {
-      if (pendingPreFenceContent) {
-        emitContent(pendingPreFenceContent);
-        pendingPreFenceContent = '';
-      }
-      emitContent('\n' + currentFence + '\n' + raw + '\n' + fenceClose + '\n');
-      return;
-    }
+    if (!parsed) return null;
 
     // Salvage common shape mistakes from the model (run BEFORE validation):
     //   {"write": {"path": "..."}}        →  {name: "write", arguments: {...}}
@@ -292,12 +278,7 @@ function createTranslator(opts) {
     // Validate AFTER salvage: must have a non-empty "name"
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
         typeof parsed.name !== 'string' || !parsed.name.trim()) {
-      if (pendingPreFenceContent) {
-        emitContent(pendingPreFenceContent);
-        pendingPreFenceContent = '';
-      }
-      emitContent('\n' + currentFence + '\n' + raw + '\n' + fenceClose + '\n');
-      return;
+      return null;
     }
 
     const name = typeof parsed.name === 'string' ? parsed.name : '';
@@ -311,12 +292,7 @@ function createTranslator(opts) {
     if (typeof args === 'string') {
       try { args = JSON.parse(args); }
       catch (_) {
-        if (pendingPreFenceContent) {
-          emitContent(pendingPreFenceContent);
-          pendingPreFenceContent = '';
-        }
-        emitContent('\n' + currentFence + '\n' + raw + '\n' + fenceClose + '\n');
-        return;
+        return null;
       }
     }
     if (typeof args !== 'string') {
@@ -324,55 +300,143 @@ function createTranslator(opts) {
     }
 
     const callId = (typeof parsed.id === 'string' && parsed.id) || generateId('call');
+    return { name, args, callId };
+  }
 
+  function emitToolCall(call) {
     emit(chunk({
       tool_calls: [{
         index: toolCallIndex,
-        id: callId,
+        id: call.callId,
         type: 'function',
-        function: { name: name, arguments: '' }
+        function: { name: call.name, arguments: '' }
       }]
     }));
-    if (args) {
+    if (call.args) {
       emit(chunk({
         tool_calls: [{
           index: toolCallIndex,
-          function: { arguments: args }
+          function: { arguments: call.args }
         }]
       }));
     }
     toolCallIndex++;
     toolCallsEmitted = true;
-    pendingPreFenceContent = '';
-    matchedFenceOpen = fenceOpen;
   }
 
-  function drainIdle(isFinal) {
-    while (state === STATE_IDLE) {
-      // Find the earliest tool-call fence among all supported variants.
-      let fenceIdx = -1;
-      matchedFenceOpen = fenceOpen;
-      for (const f of ALT_TOOL_FENCES) {
-        const idx = findFenceLine(buffer, f, false);
-        if (idx !== -1 && (fenceIdx === -1 || idx < fenceIdx)) {
-          fenceIdx = idx;
-          matchedFenceOpen = f;
-        }
+  function consumeOpeningFence(text, fence) {
+    if (!text.startsWith(fence)) return null;
+    let pos = fence.length;
+    while (pos < text.length && (text[pos] === ' ' || text[pos] === '\t')) pos++;
+    if (pos >= text.length) return { complete: false, bodyStart: pos };
+    if (text[pos] === '\r') pos++;
+    if (pos >= text.length) return { complete: false, bodyStart: pos };
+    if (text[pos] !== '\n') return null;
+    return { complete: true, bodyStart: pos + 1 };
+  }
+
+  function afterClosingFence(text, closeIdx) {
+    let pos = closeIdx + fenceClose.length;
+    while (pos < text.length && (text[pos] === ' ' || text[pos] === '\t')) pos++;
+    if (text[pos] === '\r') pos++;
+    if (text[pos] === '\n') pos++;
+    return pos;
+  }
+
+  function firstNonWhitespaceIndex(text, start) {
+    let pos = start;
+    while (pos < text.length && /\s/.test(text[pos])) pos++;
+    return pos;
+  }
+
+  function findToolFence(buf) {
+    if (toolFenceContentSeen) return null;
+    let fenceIdx = -1;
+    let matched = fenceOpen;
+    for (const f of ALT_TOOL_FENCES) {
+      const idx = findFenceLine(buf, f, false);
+      if (idx !== -1 && (fenceIdx === -1 || idx < fenceIdx)) {
+        fenceIdx = idx;
+        matched = f;
       }
+    }
+    return fenceIdx === -1 ? null : { idx: fenceIdx, fence: matched };
+  }
+
+  function analyzeCandidateText(text, isFinal) {
+    for (const f of ALT_TOOL_FENCES) {
+      if (text.length <= f.length && f.startsWith(text)) {
+        return { status: 'pending' };
+      }
+
+      const open = consumeOpeningFence(text, f);
+      if (!open) continue;
+      if (!open.complete) return { status: 'pending' };
+
+      const rest = text.slice(open.bodyStart);
+      const closeIdxInRest = findFenceLine(rest, fenceClose, true);
+      if (closeIdxInRest === -1) {
+        return isFinal ? { status: 'invalid', flushLen: text.length } : { status: 'pending' };
+      }
+
+      const closeIdx = open.bodyStart + closeIdxInRest;
+      const after = afterClosingFence(text, closeIdx);
+      const nextContent = firstNonWhitespaceIndex(text, after);
+      if (nextContent < text.length) {
+        return { status: 'invalid', flushLen: nextContent };
+      }
+
+      const payload = text.slice(open.bodyStart, closeIdx).trim();
+      const call = payload ? parseToolPayload(payload) : null;
+      if (call) return isFinal ? { status: 'tool', call } : { status: 'pending' };
+      return isFinal ? { status: 'invalid', flushLen: text.length } : { status: 'pending' };
+    }
+
+    return { status: 'invalid', flushLen: Math.max(1, text.length) };
+  }
+
+  function flushInvalidCandidate(flushLen, isFinal) {
+    const n = Math.max(1, Math.min(flushLen || candidateBuffer.length, candidateBuffer.length));
+    emitContent(candidateBuffer.slice(0, n));
+    toolFenceContentSeen = true;
+    buffer = candidateBuffer.slice(n) + buffer;
+    candidateBuffer = '';
+    candidateActive = false;
+    drainNormal(!!isFinal);
+  }
+
+  function drainCandidate(isFinal) {
+    while (candidateActive && state === STATE_IDLE) {
+      const analysis = analyzeCandidateText(candidateBuffer, !!isFinal);
+      if (analysis.status === 'pending') return;
+      if (analysis.status === 'tool') {
+        candidateBuffer = '';
+        candidateActive = false;
+        emitToolCall(analysis.call);
+        return;
+      }
+      flushInvalidCandidate(analysis.flushLen, !!isFinal);
+    }
+  }
+
+  function drainNormal(isFinal) {
+    while (state === STATE_IDLE) {
       const stopIdx = findStopSequence(buffer);
+      const tool = findToolFence(buffer);
       let useStop = false;
       let nextIdx = -1;
-      if (fenceIdx !== -1 && stopIdx !== -1) {
-        if (stopIdx <= fenceIdx) { useStop = true; nextIdx = stopIdx; }
-        else { nextIdx = fenceIdx; }
+      if (stopIdx !== -1 && tool) {
+        if (stopIdx <= tool.idx) { useStop = true; nextIdx = stopIdx; }
+        else { nextIdx = tool.idx; }
       } else if (stopIdx !== -1) {
-        useStop = true; nextIdx = stopIdx;
-      } else if (fenceIdx !== -1) {
-        nextIdx = fenceIdx;
+        useStop = true;
+        nextIdx = stopIdx;
+      } else if (tool) {
+        nextIdx = tool.idx;
       }
 
       if (nextIdx === -1) {
-        const end = isFinal ? buffer.length : safeIdleEmitEnd();
+        const end = isFinal ? buffer.length : safeNormalEmitEnd();
         if (end > 0) {
           emitContent(buffer.slice(0, end));
           buffer = buffer.slice(end);
@@ -382,53 +446,20 @@ function createTranslator(opts) {
 
       // Text before the marker, stripping the separating \n.
       let before = buffer.slice(0, nextIdx);
-      if (before.endsWith('\n')) before = before.slice(0, -1);
-
       if (useStop) {
+        if (before.endsWith('\n')) before = before.slice(0, -1);
         emitContent(before);
         buffer = '';
         state = STATE_TRUNCATED;
         return;
       }
 
-      // Tool-call fence — hold back pre-fence text
-      if (before) pendingPreFenceContent = before;
-      let consumed = fenceIdx + matchedFenceOpen.length;
-      // Skip trailing whitespace we already tolerated in findFenceLine
-      while (consumed < buffer.length && (buffer[consumed] === ' ' || buffer[consumed] === '\t')) {
-        consumed++;
-      }
-      if (buffer[consumed] === '\r') consumed++;
-      if (buffer[consumed] === '\n') consumed++;
-      buffer = buffer.slice(consumed);
-      state = STATE_TOOL_CALL;
-    }
-  }
-
-  function drainToolCall(isFinal) {
-    while (state === STATE_TOOL_CALL) {
-      const idx = findFenceLine(buffer, fenceClose, isFinal);
-      if (idx === -1) {
-        if (isFinal) {
-          toolBuffer += buffer;
-          buffer = '';
-          flushToolBuffer();
-          state = toolCallsEmitted ? STATE_TRUNCATED : STATE_IDLE;
-        }
-        return;
-      }
-      toolBuffer += buffer.slice(0, idx);
-      let consumed = idx + fenceClose.length;
-      if (buffer[consumed] === '\r') consumed++;
-      if (buffer[consumed] === '\n') consumed++;
-      buffer = buffer.slice(consumed);
-      flushToolBuffer();
-      if (toolCallsEmitted) {
-        buffer = '';
-        state = STATE_TRUNCATED;
-        return;
-      }
-      state = STATE_IDLE;
+      emitContent(before);
+      candidateBuffer = buffer.slice(nextIdx);
+      buffer = '';
+      candidateActive = true;
+      drainCandidate(!!isFinal);
+      return;
     }
   }
 
@@ -444,21 +475,24 @@ function createTranslator(opts) {
       if (state === STATE_TRUNCATED) return;
       if (typeof delta !== 'string' || !delta) return;
       ensureStarted();
-      buffer += delta;
-      drainIdle(false);
-      drainToolCall(false);
+      if (candidateActive) {
+        candidateBuffer += delta;
+        drainCandidate(false);
+      } else {
+        buffer += delta;
+        drainNormal(false);
+      }
     },
     end() {
       if (ended) return;
       ended = true;
       ensureStarted();
       if (state !== STATE_TRUNCATED) {
-        drainIdle(true);
-        drainToolCall(true);
-      }
-      if (pendingPreFenceContent) {
-        emitContent(pendingPreFenceContent);
-        pendingPreFenceContent = '';
+        if (candidateActive) {
+          drainCandidate(true);
+        } else {
+          drainNormal(true);
+        }
       }
       emit(chunk({}, toolCallsEmitted ? 'tool_calls' : 'stop'));
     },

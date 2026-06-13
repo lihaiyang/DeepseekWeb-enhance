@@ -73,6 +73,35 @@ const EARLY_HOOK_CODE = (
   '    return bodyStr;\n' +
   '  }\n' +
   '\n' +
+  '  function emitHookError(message) {\n' +
+  '    var cb = window.__dsAgentSSECallbacks;\n' +
+  '    if (cb && typeof cb.onError === "function") {\n' +
+  '      cb.onError(message || "DeepSeek 回复被中断");\n' +
+  '      return true;\n' +
+  '    }\n' +
+  '    return false;\n' +
+  '  }\n' +
+  '\n' +
+  '  function hasNewStoppedIndicator() {\n' +
+  '    var dom = window.__dsAgentDOM;\n' +
+  '    if (!dom || typeof dom.hasNewStoppedIndicator !== "function") return false;\n' +
+  '    var baseline = Array.isArray(window.__dsAgentStoppedBaselineNodes) ? window.__dsAgentStoppedBaselineNodes : (window.__dsAgentStoppedBaselineCount || 0);\n' +
+  '    return dom.hasNewStoppedIndicator(baseline);\n' +
+  '  }\n' +
+  '\n' +
+  '  function completeStream(thinkingAcc, responseAcc, lastLens, pTracker, setLastLens) {\n' +
+  '    var nextLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, false, lastLens.thinkingLen, lastLens.responseLen, pTracker);\n' +
+  '    setLastLens(nextLens);\n' +
+  '    setTimeout(function () {\n' +
+  '      if (hasNewStoppedIndicator()) {\n' +
+  '        console.error(PREFIX + " DeepSeek stopped indicator detected");\n' +
+  '        emitHookError("DeepSeek 回复已停止，未返回可用正文");\n' +
+  '        return;\n' +
+  '      }\n' +
+  '      setLastLens(window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true, nextLens.thinkingLen, nextLens.responseLen, pTracker));\n' +
+  '    }, 120);\n' +
+  '  }\n' +
+  '\n' +
   '  window.fetch = async function () {\n' +
   '    var url = (typeof arguments[0] === "string") ? arguments[0] : (arguments[0] && arguments[0].url);\n' +
   '    var isCompletion = url && (url.indexOf("completion") !== -1 || url.indexOf("conversation") !== -1);\n' +
@@ -96,7 +125,7 @@ const EARLY_HOOK_CODE = (
   '              var lines = buffer.split("\\n");\n' +
   '              for (var i = 0; i < lines.length; i++) window.__dsAgentProcessLine(lines[i], thinkingAcc, responseAcc, pTracker);\n' +
   '            }\n' +
-  '            lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true, lastLens.thinkingLen, lastLens.responseLen, pTracker);\n' +
+  '            completeStream(thinkingAcc, responseAcc, lastLens, pTracker, function (v) { lastLens = v; });\n' +
   '            return;\n' +
   '          }\n' +
   '          var chunk = decoder.decode(result.value, { stream: true });\n' +
@@ -114,7 +143,9 @@ const EARLY_HOOK_CODE = (
   '          pump();\n' +
   '        }).catch(function (err) {\n' +
   '          console.error(PREFIX + " stream err:", err);\n' +
-  '          lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true, lastLens.thinkingLen, lastLens.responseLen, pTracker);\n' +
+  '          if (!emitHookError("DeepSeek 流读取失败: " + (err && err.message || err))) {\n' +
+  '            lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, true, lastLens.thinkingLen, lastLens.responseLen, pTracker);\n' +
+  '          }\n' +
   '        });\n' +
   '      }\n' +
   '      pump();\n' +
@@ -161,7 +192,11 @@ const EARLY_HOOK_CODE = (
   '              for (var k = 0; k < lines.length; k++) window.__dsAgentProcessLine(lines[k], thinkingAcc, responseAcc, xhrPTracker);\n' +
   '              xhrBuffer = "";\n' +
   '            }\n' +
-  '            lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, this.readyState === 4, lastLens.thinkingLen, lastLens.responseLen, xhrPTracker);\n' +
+  '            if (this.readyState === 4) {\n' +
+  '              completeStream(thinkingAcc, responseAcc, lastLens, xhrPTracker, function (v) { lastLens = v; });\n' +
+  '            } else {\n' +
+  '              lastLens = window.__dsAgentFireCallbacks(thinkingAcc, responseAcc, false, lastLens.thinkingLen, lastLens.responseLen, xhrPTracker);\n' +
+  '            }\n' +
   '          }\n' +
   '        } catch (e) { console.error(PREFIX + " XHR err:", e); }\n' +
   '      });\n' +

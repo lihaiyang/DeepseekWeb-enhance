@@ -68,6 +68,15 @@ function toolCallNames(chunks) {
   return Array.from(names);
 }
 
+async function captureRejection(promise) {
+  try {
+    await promise;
+    return null;
+  } catch (err) {
+    return err;
+  }
+}
+
 (async () => {
   // 1. Happy path — content arrives live (before end), no retry.
   {
@@ -92,8 +101,8 @@ function toolCallNames(chunks) {
     check('happy: finish_reason stop', finishReason(collected) === 'stop');
   }
 
-  // 2. Thinking-only then end — no retry; pi gets clean stop and decides
-  // for itself whether to retry.
+  // 2. Thinking-only then end — reject as a bad upstream response. pi needs
+  // content or a tool call; reasoning alone is not consumable output.
   {
     const { bridge, sent } = makeBridge();
     const collected = [];
@@ -105,15 +114,17 @@ function toolCallNames(chunks) {
     const rid = sent[0].payload.requestId;
     ipcMainStub.emit('llm:thinking', { requestId: rid, delta: '想啊想' });
     ipcMainStub.emit('llm:end', { requestId: rid });
-    await p;
+    const err = await captureRejection(p);
     check('thinking-only: single attempt (no auto-retry)', sent.length === 1);
     check('thinking-only: reasoning visible', deltaReasoning(collected) === '想啊想');
     check('thinking-only: content empty', deltaContent(collected) === '');
-    check('thinking-only: finish_reason stop', finishReason(collected) === 'stop');
+    check('thinking-only: request rejected',
+      err && /未返回可用正文/.test(err.message), err && err.message);
+    check('thinking-only: no normal finish', finishReason(collected) === null);
   }
 
   // 3. Stream error mid-content — partial content already flowed; the
-  // error gets surfaced inline; no retry.
+  // request rejects without appending fake assistant content.
   {
     const { bridge, sent } = makeBridge();
     const collected = [];
@@ -127,12 +138,14 @@ function toolCallNames(chunks) {
     ipcMainStub.emit('llm:content', { requestId: rid, delta: 'partial' });
     contentBeforeError = deltaContent(collected);
     ipcMainStub.emit('llm:error', { requestId: rid, message: 'network blip' });
-    await p;
+    const err = await captureRejection(p);
     check('error: single attempt (no auto-retry)', sent.length === 1);
     check('error: partial content streamed before error', contentBeforeError === 'partial');
-    check('error: error appended to content',
-      /\[stream error: network blip\]/.test(deltaContent(collected)));
-    check('error: finish_reason stop', finishReason(collected) === 'stop');
+    check('error: request rejected',
+      err && err.message === 'network blip', err && err.message);
+    check('error: no fake error content appended',
+      !/\[stream error: network blip\]/.test(deltaContent(collected)));
+    check('error: no normal finish', finishReason(collected) === null);
   }
 
   // 4. Stall detection — first chunk arrives, then renderer goes silent;
@@ -148,12 +161,14 @@ function toolCallNames(chunks) {
     const rid = sent[0].payload.requestId;
     ipcMainStub.emit('llm:content', { requestId: rid, delta: '开始回答' });
     // Now stay quiet — let the watchdog fire.
-    await p;
+    const err = await captureRejection(p);
     check('stall: single attempt', sent.filter((s) => s.channel === 'llm:run').length === 1);
     check('stall: live content kept', /开始回答/.test(deltaContent(collected)));
-    check('stall: chinese timeout message appended',
-      /模型响应超时/.test(deltaContent(collected)));
-    check('stall: finish_reason stop', finishReason(collected) === 'stop');
+    check('stall: request rejected',
+      err && /模型响应超时/.test(err.message), err && err.message);
+    check('stall: timeout not appended as content',
+      !/模型响应超时/.test(deltaContent(collected)));
+    check('stall: no normal finish', finishReason(collected) === null);
     check('stall: renderer notified to abort',
       sent.some((s) => s.channel === 'llm:abort' && s.payload.requestId === rid));
   }
@@ -199,6 +214,28 @@ function toolCallNames(chunks) {
     check('tool only: single attempt', sent.length === 1);
     check('tool only: tool emitted', toolCallNames(collected).indexOf('ls') !== -1);
     check('tool only: finish_reason tool_calls', finishReason(collected) === 'tool_calls');
+  }
+
+  // 7. Thinking followed by a tool_call whose closing fence sits at the
+  // stream tail: translator only emits the tool during end(), so the
+  // reasoning-only guard must not fire early.
+  {
+    const { bridge, sent } = makeBridge();
+    const collected = [];
+    const p = bridge.request({
+      body: { messages: [{ role: 'user', content: 'list files' }] },
+      onChunk: (c) => collected.push(c),
+    });
+    await sleep(10);
+    const rid = sent[0].payload.requestId;
+    ipcMainStub.emit('llm:thinking', { requestId: rid, delta: '需要列目录' });
+    ipcMainStub.emit('llm:content', { requestId: rid, delta: '```tool_call\n{"name":"ls","arguments":{}}\n```' });
+    ipcMainStub.emit('llm:end', { requestId: rid });
+    const err = await captureRejection(p);
+    check('thinking+tail-tool: request resolved', err === null, err && err.message);
+    check('thinking+tail-tool: reasoning visible', deltaReasoning(collected) === '需要列目录');
+    check('thinking+tail-tool: tool emitted', toolCallNames(collected).indexOf('ls') !== -1);
+    check('thinking+tail-tool: finish_reason tool_calls', finishReason(collected) === 'tool_calls');
   }
 
   console.log('');

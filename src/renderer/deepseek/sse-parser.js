@@ -25,6 +25,7 @@
     onThinking: null,
     onContent: null,
     onEnd: null,
+    onError: null,
   };
 
   // ─── Process a single SSE line ──────────────────────────────

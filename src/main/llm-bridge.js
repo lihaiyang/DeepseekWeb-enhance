@@ -11,10 +11,8 @@
  *  - 翻译后的 OpenAI chunk 立刻通过 onChunk 回调直通给 pi，不做缓冲
  *
  * 失败处理：
- *  - 本层不做自动重试。任何失败（DeepSeek 报错、空响应、流卡死）都按
- *    OpenAI 兼容流的形态收尾（content delta 注入错误说明 + finish_reason
- *    'stop' + [DONE]），由调用方（pi 客户端）自行决定是否重试，对齐主线
- *    OpenAI SDK 行为。
+ *  - 本层不做自动重试。任何失败（DeepSeek 报错、空响应、流卡死）都
+ *    reject 给 HTTP shim，由 HTTP 层按 OpenAI 兼容错误事件关闭流。
  *
  * 卡死检测（stall watchdog）：
  *  - 从首个 thinking/content chunk 开始计时，每收到任意 incoming（包括
@@ -36,6 +34,7 @@ const { createTranslator } = require('./protocol/parse-stream');
 
 const STALL_TIMEOUT_MS = 5000;       // 流卡死阈值：相邻 chunk 间隔超过此值即视为失败
 const STALL_MESSAGE = '模型响应超时（5s 无新内容），本次回复中断';
+const REASONING_ONLY_MESSAGE = 'DeepSeek 未返回可用正文（仅收到思考内容）';
 
 // Session constants — 控制同一个 DeepSeek 聊天窗口的复用
 // DeepSeek 上下文窗口 1M tokens，输入框单次最大 ~500k tokens
@@ -207,6 +206,7 @@ class LlmBridge {
     }
 
     let contentLen = 0;
+    let rawContentLen = 0;
     let toolCallsLen = 0;
     let reasoningLen = 0;
     let hadError = false;
@@ -236,7 +236,8 @@ class LlmBridge {
     const state = {
       handle,
       translator,
-      counters: () => ({ contentLen, toolCallsLen, reasoningLen, hadError, errorMessage }),
+      counters: () => ({ contentLen, rawContentLen, toolCallsLen, reasoningLen, hadError, errorMessage }),
+      noteRawContent: (delta) => { if (typeof delta === 'string') rawContentLen += delta.length; },
       markError: (msg) => { hadError = true; errorMessage = msg; },
       finalized: false,
       stallTimer: null,
@@ -274,8 +275,7 @@ class LlmBridge {
   _onStall(state) {
     state.stallTimer = null;
     if (state.finalized) return;
-    state.markError('stalled');
-    try { state.translator.fail(STALL_MESSAGE); } catch (_) {}
+    state.markError(STALL_MESSAGE);
     this._sendAbort(state.handle.requestId);
     this._finalizeAttempt(state);
   }
@@ -286,10 +286,10 @@ class LlmBridge {
     this._clearStallTimer(state);
     this._pending.delete(state.handle.requestId);
 
-    const { contentLen, toolCallsLen, reasoningLen, hadError, errorMessage } = state.counters();
+    const { contentLen, rawContentLen, toolCallsLen, reasoningLen, hadError, errorMessage } = state.counters();
     this._logEvent('llm:attempt-done', {
       requestId: state.handle.requestId,
-      contentLen, toolCallsLen, reasoningLen,
+      contentLen, rawContentLen, toolCallsLen, reasoningLen,
       hadError, errorMessage,
     });
 
@@ -305,8 +305,8 @@ class LlmBridge {
         totalChars: this._session.totalChars,
         estimatedTokens: estimateTokens(String(this._session.totalChars)),
       });
-    } else if (errorMessage === 'stalled') {
-      // 卡死 → 让下次请求降级为完整 prompt 重建
+    } else if (hadError) {
+      // 任何中断/错误后都让下次请求降级为完整 prompt 重建
       this._session.active = false;
     }
 
@@ -328,19 +328,27 @@ class LlmBridge {
         if (!state.handle.aborted) state.translator.pushReasoning(payload.delta || '');
         this._armStallTimer(state);
       } else if (kind === 'content') {
-        if (!state.handle.aborted) state.translator.pushContent(payload.delta || '');
+        if (!state.handle.aborted) {
+          state.noteRawContent(payload.delta || '');
+          state.translator.pushContent(payload.delta || '');
+        }
         this._armStallTimer(state);
       } else if (kind === 'end') {
-        state.translator.end();
-        this._finalizeAttempt(state);
+        const counts = state.counters();
+        if (counts.reasoningLen > 0 && counts.rawContentLen === 0 &&
+            counts.contentLen === 0 && counts.toolCallsLen === 0) {
+          state.markError(REASONING_ONLY_MESSAGE);
+          this._finalizeAttempt(state);
+        } else {
+          state.translator.end();
+          this._finalizeAttempt(state);
+        }
       } else if (kind === 'error') {
         state.markError(payload.message || 'unknown error');
-        state.translator.fail(payload.message || 'unknown error');
         this._finalizeAttempt(state);
       }
     } catch (err) {
       state.markError(err.message);
-      try { state.translator.fail(err.message); } catch (_) {}
       this._finalizeAttempt(state);
     }
   }

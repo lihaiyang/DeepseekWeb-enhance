@@ -51,6 +51,7 @@
     this._savedThinking = null;
     this._savedContent = null;
     this._savedEnd = null;
+    this._savedError = null;
   }
 
   DeepSeekClient.prototype.onThinking = function (fn) { this._onThinking = fn; };
@@ -415,10 +416,12 @@
     this._savedThinking = adapter._thinkingCallbacks ? adapter._thinkingCallbacks.slice() : [];
     this._savedContent  = adapter._contentCallbacks  ? adapter._contentCallbacks.slice()  : [];
     this._savedEnd      = adapter._endCallbacks      ? adapter._endCallbacks.slice()      : [];
+    this._savedError    = adapter._errorCallbacks    ? adapter._errorCallbacks.slice()    : [];
 
     adapter._thinkingCallbacks = [];
     adapter._contentCallbacks  = [];
     adapter._endCallbacks      = [];
+    adapter._errorCallbacks    = [];
 
     var self = this;
     if (this._onThinking) {
@@ -435,6 +438,7 @@
     if (this._savedThinking !== null) { adapter._thinkingCallbacks = this._savedThinking; this._savedThinking = null; }
     if (this._savedContent  !== null) { adapter._contentCallbacks  = this._savedContent;  this._savedContent  = null; }
     if (this._savedEnd      !== null) { adapter._endCallbacks      = this._savedEnd;      this._savedEnd      = null; }
+    if (this._savedError    !== null) { adapter._errorCallbacks    = this._savedError;    this._savedError    = null; }
   };
 
   window.DeepSeekClient = DeepSeekClient;

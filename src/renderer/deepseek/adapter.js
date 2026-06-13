@@ -29,6 +29,7 @@
     this._thinkingCallbacks = [];
     this._contentCallbacks = [];
     this._endCallbacks = [];
+    this._errorCallbacks = [];
     this._pendingResolve = null;
     this._pendingReject = null;
     this._pendingTimeout = null;
@@ -56,6 +57,16 @@
         resolve(fullResponse);
       }
     };
+    window.__dsAgentSSECallbacks.onError = function (message) {
+      for (var i = 0; i < self._errorCallbacks.length; i++) {
+        self._errorCallbacks[i](message);
+      }
+      if (self._pendingReject) {
+        var reject = self._pendingReject;
+        self._clearPending();
+        reject(new Error(message || 'DeepSeek 回复被中断'));
+      }
+    };
   }
 
   // ─── Callback Registration ──────────────────────────────────
@@ -70,6 +81,10 @@
 
   DeepSeekAdapter.prototype.onEnd = function (fn) {
     this._endCallbacks.push(fn);
+  };
+
+  DeepSeekAdapter.prototype.onError = function (fn) {
+    this._errorCallbacks.push(fn);
   };
 
   // ─── Status ─────────────────────────────────────────────────
@@ -95,6 +110,17 @@
 
     var input = dom.findInputElement();
     if (!input) return Promise.reject(new Error('无法找到 DeepSeek 输入框'));
+
+    if (dom.findStoppedIndicators) {
+      window.__dsAgentStoppedBaselineNodes = dom.findStoppedIndicators();
+      window.__dsAgentStoppedBaselineCount = window.__dsAgentStoppedBaselineNodes.length;
+    } else if (dom.getStoppedIndicatorCount) {
+      window.__dsAgentStoppedBaselineNodes = [];
+      window.__dsAgentStoppedBaselineCount = dom.getStoppedIndicatorCount();
+    } else {
+      window.__dsAgentStoppedBaselineNodes = [];
+      window.__dsAgentStoppedBaselineCount = 0;
+    }
 
     var self = this;
 
@@ -154,9 +180,11 @@
     window.__dsAgentSSECallbacks.onThinking = null;
     window.__dsAgentSSECallbacks.onContent = null;
     window.__dsAgentSSECallbacks.onEnd = null;
+    window.__dsAgentSSECallbacks.onError = null;
     this._thinkingCallbacks = [];
     this._contentCallbacks = [];
     this._endCallbacks = [];
+    this._errorCallbacks = [];
   };
 
   // ─── Internal ───────────────────────────────────────────────

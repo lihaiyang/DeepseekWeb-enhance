@@ -126,6 +126,16 @@ function writeSseDone(res) {
   res.write('data: [DONE]\n\n');
 }
 
+function writeSseError(res, err) {
+  const message = err && err.message ? err.message : String(err || 'unknown error');
+  res.write('data: ' + JSON.stringify({
+    error: {
+      message,
+      type: 'server_error',
+    },
+  }) + '\n\n');
+}
+
 /**
  * @param {object} deps
  * @param {import('./llm-bridge').LlmBridge} deps.bridge
@@ -203,9 +213,9 @@ function createHttpServer(deps) {
           writeSseDone(res);
         } catch (err) {
           log('llm:error', { message: err.message });
-          // Don't write [DONE] — let the SSE connection close abruptly so
-          // the client SDK treats this as a stream interruption and surfaces
-          // the error to the user.
+          try { writeSseError(res, err); } catch (_) {}
+          // Don't write [DONE] after an error event. Closing the connection
+          // tells the client this was an API failure, not a normal stop.
         } finally {
           req.removeListener('close', onClose);
           try { res.end(); } catch (_) {}

@@ -38,6 +38,13 @@ class FakeBridge {
   }
 }
 
+class RejectBridge {
+  isReady() { return true; }
+  request() {
+    return Promise.reject(new Error('DeepSeek 回复已停止，未返回可用正文'));
+  }
+}
+
 async function fetchSseAll(port) {
   return new Promise((resolve, reject) => {
     const req = http.request({
@@ -119,6 +126,24 @@ function check(name, cond, info) {
   check('non-stream finish_reason', r2.json.choices[0].finish_reason === 'tool_calls');
 
   await server.close();
+
+  // Streaming errors are surfaced as SSE error events, without [DONE].
+  const errorServer = createHttpServer({ bridge: new RejectBridge() });
+  const errorPort = await errorServer.listen();
+  const errStream = await fetchSseAll(errorPort);
+  check('sse error status 200', errStream.status === 200);
+  check('sse error event emitted', errStream.body.indexOf('"error"') !== -1);
+  check('sse error has message', errStream.body.indexOf('DeepSeek 回复已停止') !== -1);
+  check('sse error has no DONE', errStream.body.indexOf('[DONE]') === -1);
+  const errJson = await postJson(errorPort, {
+    model: 'deepseek-via-web',
+    messages: [{ role: 'user', content: 'hi' }],
+    stream: false,
+  });
+  check('non-stream error status 500', errJson.status === 500);
+  check('non-stream error payload', errJson.json.error && errJson.json.error.message.indexOf('DeepSeek 回复已停止') !== -1);
+  await errorServer.close();
+
   console.log('');
   console.log(pass + ' passed, ' + fail + ' failed');
   process.exit(fail === 0 ? 0 : 1);

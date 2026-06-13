@@ -5,7 +5,14 @@
  */
 
 const { createTranslator } = require('../src/main/protocol/parse-stream');
-const { buildPrompt } = require('../src/main/protocol/build-prompt');
+const {
+  buildPrompt,
+  MARKER_SYSTEM,
+  MARKER_USER,
+  MARKER_ASSISTANT,
+  MARKER_TOOL,
+  MARKER_END_USER,
+} = require('../src/main/protocol/build-prompt');
 
 function collect(fn) {
   const out = [];
@@ -73,7 +80,7 @@ function check(name, cond, info) {
     t.end();
   });
   const tcs = toolCalls(chunks);
-  check('one-shot tool: no pre-fence content leaked', deltaContent(chunks) === '');
+  check('one-shot tool: pre-fence content preserved', deltaContent(chunks) === '要列出文件。\n');
   check('one-shot tool: count', tcs.length === 1);
   check('one-shot tool: name', tcs[0] && tcs[0].name === 'ls');
   check('one-shot tool: args', tcs[0] && tcs[0].arguments === '{"path":"."}');
@@ -88,7 +95,7 @@ function check(name, cond, info) {
     t.end();
   });
   const tcs = toolCalls(chunks);
-  check('chunked tool: content', deltaContent(chunks) === 'I will run a command.');
+  check('chunked tool: content', deltaContent(chunks) === 'I will run a command.\n');
   check('chunked tool: name', tcs.length === 1 && tcs[0].name === 'bash');
   check('chunked tool: args', tcs.length === 1 && tcs[0].arguments === '{"cmd":"ls -la"}');
   check('chunked tool: finish', finishReason(chunks) === 'tool_calls');
@@ -131,19 +138,17 @@ function check(name, cond, info) {
   check('content forwarded alongside', deltaContent(chunks) === 'answer');
 }
 
-// 7. Multiple tool_call fences in a single response: only the first is
-// emitted, the rest are silently dropped by the parser cap.
+// 7. Multiple tool_call fences in a single response are content, not tools.
 {
+  const text = '一步一步：\n```tool_call\n{"name":"a","arguments":{}}\n```\n```tool_call\n{"name":"b","arguments":{}}\n```';
   const chunks = collect(t => {
-    t.pushContent('一步一步：\n```tool_call\n{"name":"a","arguments":{}}\n```\n```tool_call\n{"name":"b","arguments":{}}\n```');
+    t.pushContent(text);
     t.end();
   });
   const tcs = toolCalls(chunks);
-  check('cap: only first tool call kept', tcs.length === 1);
-  check('cap: first tool name preserved', tcs[0] && tcs[0].name === 'a');
-  check('cap: finish_reason still tool_calls', finishReason(chunks) === 'tool_calls');
-  check('cap: second fence not leaked into content',
-    deltaContent(chunks).indexOf('"name":"b"') === -1);
+  check('multi-fence content: no tools', tcs.length === 0);
+  check('multi-fence content: text preserved', deltaContent(chunks) === text);
+  check('multi-fence content: finish stop', finishReason(chunks) === 'stop');
 }
 
 // 8. buildPrompt sanity: messages + tools roundtrip into a string with the
@@ -161,13 +166,13 @@ function check(name, cond, info) {
       { type: 'function', function: { name: 'ls', description: 'list a dir', parameters: { type: 'object', properties: { path: { type: 'string', description: 'dir' } }, required: ['path'] } } }
     ]
   });
-  check('prompt has system header', prompt.indexOf('[系统]') !== -1);
-  check('prompt has tool list', prompt.indexOf('### ls') !== -1);
+  check('prompt has system header', prompt.indexOf(MARKER_SYSTEM) !== -1);
+  check('prompt has tool list', prompt.indexOf('工具: ls') !== -1);
   check('prompt has tool_call fence example', prompt.indexOf('```tool_call') !== -1);
   check('prompt has past tool_call replay', prompt.indexOf('"name":"ls"') !== -1);
-  check('prompt has tool result', prompt.indexOf('[工具结果 id=call_1]') !== -1);
-  check('prompt ends with last dialog message (no trailing [助手] cue)',
-    /\[用户\]\nwhat next\?\s*$/.test(prompt));
+  check('prompt has tool result', prompt.indexOf(MARKER_TOOL + '\na.txt\nb.txt') !== -1);
+  check('prompt ends with last dialog message (no trailing assistant cue)',
+    prompt.endsWith(MARKER_USER + '\nwhat next?\n' + MARKER_END_USER));
 }
 
 // 9. buildPrompt handles OpenAI array-style content (pi / pi-ai sends this).
@@ -181,7 +186,7 @@ function check(name, cond, info) {
   });
   check('array content: system text preserved', prompt.indexOf('sys instructions') !== -1);
   check('array content: user text preserved',   prompt.indexOf('你好呀') !== -1);
-  check('array content: user header present',   prompt.indexOf('[用户]\n你好呀') !== -1);
+  check('array content: user header present',   prompt.indexOf(MARKER_USER + '\n你好呀') !== -1);
 }
 
 // 10. buildPrompt handles mixed array parts (text + image_url) gracefully.
@@ -209,6 +214,7 @@ function check(name, cond, info) {
   check('salvage tool-as-top-key: count', tcs.length === 1);
   check('salvage tool-as-top-key: name', tcs.length === 1 && tcs[0].name === 'write');
   check('salvage tool-as-top-key: args', tcs.length === 1 && tcs[0].arguments === '{"path":"/tmp/a","content":"hi"}');
+  check('salvage tool-as-top-key: preface kept', deltaContent(chunks) === '我来写文件。\n');
   check('salvage tool-as-top-key: finish', finishReason(chunks) === 'tool_calls');
 }
 
@@ -224,42 +230,42 @@ function check(name, cond, info) {
   check('salvage flat-args: args has offset', tcs.length === 1 && tcs[0].arguments.indexOf('"offset":10') !== -1);
 }
 
-// 13. Trailing junk after closing fence (model appends "}}" or commentary)
-// is silently dropped by the cap — protocol rule 5 forbids any post-fence
-// content, and the parser enforces it.
+// 13. Trailing junk after closing fence means this is normal content.
 {
+  const text = '```tool_call\n{"name": "ls", "arguments": {}}\n```\n好的我已经调用了。';
   const chunks = collect(t => {
-    t.pushContent('```tool_call\n{"name": "ls", "arguments": {}}\n```\n好的我已经调用了。');
+    t.pushContent(text);
     t.end();
   });
   const tcs = toolCalls(chunks);
-  check('trailing junk: tool still parsed', tcs.length === 1 && tcs[0].name === 'ls');
-  check('trailing junk: finish_reason tool_calls', finishReason(chunks) === 'tool_calls');
-  check('trailing junk: trailing text dropped', deltaContent(chunks).indexOf('好的我已经调用了。') === -1);
+  check('trailing junk: no tool', tcs.length === 0);
+  check('trailing junk: finish stop', finishReason(chunks) === 'stop');
+  check('trailing junk: content preserved', deltaContent(chunks) === text);
 }
 
-// 14. Hallucination cutoff: model fabricates a [工具结果] block after the
-// fence — everything from that marker onward must be dropped.
+// 14. Hallucination cutoff still applies, but the prefixed tool_call shape
+// remains ordinary content instead of a tool call.
 {
   const chunks = collect(t => {
-    t.pushContent('我来写文件。\n```tool_call\n{"name":"write","arguments":{"path":"/tmp/a","content":"x"}}\n```\n[工具结果 id=call_x] Successfully wrote\n\n[助手]文件已创建。');
+    t.pushContent('我来写文件。\n```tool_call\n{"name":"write","arguments":{"path":"/tmp/a","content":"x"}}\n```\n' + MARKER_TOOL + '\nSuccessfully wrote\n\n' + MARKER_ASSISTANT + '\n文件已创建。');
     t.end();
   });
   const tcs = toolCalls(chunks);
-  check('hallucination: tool_call still parsed', tcs.length === 1 && tcs[0].name === 'write');
-  check('hallucination: finish_reason tool_calls', finishReason(chunks) === 'tool_calls');
+  check('hallucination: no tool_call parsed', tcs.length === 0);
+  check('hallucination: finish_reason stop', finishReason(chunks) === 'stop');
   const content = deltaContent(chunks);
-  check('hallucination: pre-fence text dropped (tool_call present)', content.indexOf('我来写文件。') === -1);
+  check('hallucination: pre-fence text kept as content', content.indexOf('我来写文件。') !== -1);
+  check('hallucination: tool fence kept as content', content.indexOf('"name":"write"') !== -1);
   check('hallucination: fake tool result dropped', content.indexOf('Successfully wrote') === -1);
   check('hallucination: fake assistant line dropped', content.indexOf('文件已创建') === -1);
-  check('hallucination: marker itself dropped', content.indexOf('[工具结果') === -1);
+  check('hallucination: marker itself dropped', content.indexOf(MARKER_TOOL) === -1);
 }
 
-// 15. Hallucinated `[助手]` block without any tool_call (pure script-mode
+// 15. Hallucinated assistant block without any tool_call (pure script-mode
 // continuation). Should also be cut off.
 {
   const chunks = collect(t => {
-    t.pushContent('好的，我会处理。\n[助手]接下来我做的事是…');
+    t.pushContent('好的，我会处理。\n' + MARKER_ASSISTANT + '\n接下来我做的事是…');
     t.end();
   });
   check('helper-only hallucination: opener kept', deltaContent(chunks).indexOf('好的，我会处理。') !== -1);
@@ -271,8 +277,8 @@ function check(name, cond, info) {
 // "\n[工" prefix until the rest arrives, then cut off.
 {
   const chunks = collect(t => {
-    t.pushContent('hello\n[工');
-    t.pushContent('具结果 id=x] not real');
+    t.pushContent('hello\n<|工');
+    t.pushContent('具|> not real');
     t.end();
   });
   check('split stop: prefix held & cut', deltaContent(chunks) === 'hello');
@@ -284,10 +290,10 @@ function check(name, cond, info) {
 // want to see.
 {
   const chunks = collect(t => {
-    t.pushContent('See note [助手] is just a label here, not a marker.');
+    t.pushContent('See note ' + MARKER_ASSISTANT + ' is just a label here, not a marker.');
     t.end();
   });
-  check('inline marker preserved', deltaContent(chunks).indexOf('[助手]') !== -1);
+  check('inline marker preserved', deltaContent(chunks).indexOf(MARKER_ASSISTANT) !== -1);
 }
 
 // 18. Custom prompt template substitutes {{tools}} with the rendered tool
@@ -301,7 +307,7 @@ function check(name, cond, info) {
   });
   check('custom template: header kept', prompt.indexOf('MY CUSTOM HEADER') !== -1);
   check('custom template: footer kept', prompt.indexOf('MY CUSTOM FOOTER') !== -1);
-  check('custom template: tools substituted', prompt.indexOf('### echo') !== -1);
+  check('custom template: tools substituted', prompt.indexOf('工具: echo') !== -1);
   check('custom template: default block absent', prompt.indexOf('硬性规则') === -1);
 }
 
@@ -333,13 +339,13 @@ function check(name, cond, info) {
     template: 'BEFORE-SYS\n\n{{system}}\n\nAFTER-SYS',
   });
   check('system placeholder: pi system rendered',
-    prompt.indexOf('[系统]\nPI-SYS') !== -1);
+    prompt.indexOf(MARKER_SYSTEM + '\nPI-SYS') !== -1);
   check('system placeholder: user content placed before pi system',
-    prompt.indexOf('BEFORE-SYS') < prompt.indexOf('[系统]\nPI-SYS'));
+    prompt.indexOf('BEFORE-SYS') < prompt.indexOf(MARKER_SYSTEM + '\nPI-SYS'));
   check('system placeholder: user content placed after pi system too',
-    prompt.indexOf('[系统]\nPI-SYS') < prompt.indexOf('AFTER-SYS'));
+    prompt.indexOf(MARKER_SYSTEM + '\nPI-SYS') < prompt.indexOf('AFTER-SYS'));
   check('system placeholder: no duplicate auto-prepend',
-    (prompt.match(/\[系统\]\nPI-SYS/g) || []).length === 1);
+    prompt.split(MARKER_SYSTEM + '\nPI-SYS').length - 1 === 1);
   check('system placeholder: literal token replaced',
     prompt.indexOf('{{system}}') === -1);
 }
@@ -357,9 +363,9 @@ function check(name, cond, info) {
     template: 'MY HEADER',
   });
   check('no system placeholder: pi system still present',
-    prompt.indexOf('[系统]\nPI-SYS') !== -1);
+    prompt.indexOf(MARKER_SYSTEM + '\nPI-SYS') !== -1);
   check('no system placeholder: pi system prepended before template',
-    prompt.indexOf('[系统]\nPI-SYS') < prompt.indexOf('MY HEADER'));
+    prompt.indexOf(MARKER_SYSTEM + '\nPI-SYS') < prompt.indexOf('MY HEADER'));
 }
 
 // 22. {{system}} placeholder with NO system messages collapses cleanly.
@@ -374,8 +380,8 @@ function check(name, cond, info) {
     prompt.indexOf('{{system}}') === -1);
   check('empty system: top kept', prompt.indexOf('top') !== -1);
   check('empty system: bottom kept', prompt.indexOf('bottom') !== -1);
-  check('empty system: no stray [系统] header',
-    prompt.indexOf('[系统]') === -1);
+  check('empty system: no stray system header',
+    prompt.indexOf(MARKER_SYSTEM) === -1);
 }
 
 // 23. Multiple system messages all flow into one {{system}} expansion.
@@ -397,36 +403,34 @@ function check(name, cond, info) {
     prompt.indexOf('dev-b') < prompt.indexOf('Y'));
 }
 
-// 24. Tool call followed by narration: narration is dropped (no second
-// tool_call permitted, and post-fence text is forbidden by protocol).
+// 24. Tool call followed by narration is content, not a tool call.
 {
+  const text = '```tool_call\n{"name":"ls","arguments":{}}\n```\n好的，我接下来会读取每个文件并总结。';
   const chunks = collect(t => {
-    t.pushContent('```tool_call\n{"name":"ls","arguments":{}}\n```\n好的，我接下来会读取每个文件并总结。');
+    t.pushContent(text);
     t.end();
   });
   const tcs = toolCalls(chunks);
-  check('cap+narration: tool parsed', tcs.length === 1 && tcs[0].name === 'ls');
-  check('cap+narration: trailing narration dropped',
-    deltaContent(chunks).indexOf('接下来会读取') === -1);
-  check('cap+narration: finish_reason tool_calls', finishReason(chunks) === 'tool_calls');
+  check('tool+narration: no tool parsed', tcs.length === 0);
+  check('tool+narration: content preserved', deltaContent(chunks) === text);
+  check('tool+narration: finish stop', finishReason(chunks) === 'stop');
 }
 
-// 25. Malformed first fence does NOT consume the cap: a subsequent valid
-// fence in the same turn still parses.
+// 25. Malformed first fence plus a later valid fence is still content because
+// the full reply is not exactly one tool_call block.
 {
+  const text = '```tool_call\nnot-valid-json\n```\n再试一次：\n```tool_call\n{"name":"read","arguments":{"path":"x"}}\n```';
   const chunks = collect(t => {
-    t.pushContent('```tool_call\nnot-valid-json\n```\n再试一次：\n```tool_call\n{"name":"read","arguments":{"path":"x"}}\n```');
+    t.pushContent(text);
     t.end();
   });
   const tcs = toolCalls(chunks);
-  check('cap+salvage: malformed surfaced as content',
-    deltaContent(chunks).indexOf('not-valid-json') !== -1);
-  check('cap+salvage: valid fence still parsed', tcs.length === 1 && tcs[0].name === 'read');
-  check('cap+salvage: finish_reason tool_calls', finishReason(chunks) === 'tool_calls');
+  check('malformed+valid: no tool parsed', tcs.length === 0);
+  check('malformed+valid: content preserved', deltaContent(chunks) === text);
+  check('malformed+valid: finish stop', finishReason(chunks) === 'stop');
 }
 
-// 26. Tool call across many tiny deltas + trailing second fence: cap holds
-// even when chunks are pathologically small.
+// 26. Tool call across many tiny deltas + trailing second fence is content.
 {
   const blob = '```tool_call\n{"name":"a","arguments":{}}\n```\n```tool_call\n{"name":"b","arguments":{}}\n```';
   const chunks = collect(t => {
@@ -434,14 +438,14 @@ function check(name, cond, info) {
     t.end();
   });
   const tcs = toolCalls(chunks);
-  check('cap chunked: one tool only', tcs.length === 1);
-  check('cap chunked: first wins', tcs[0] && tcs[0].name === 'a');
-  check('cap chunked: second not in content', deltaContent(chunks).indexOf('"name":"b"') === -1);
+  check('multi-tool chunked: no tool', tcs.length === 0);
+  check('multi-tool chunked: content preserved', deltaContent(chunks) === blob);
+  check('multi-tool chunked: finish stop', finishReason(chunks) === 'stop');
 }
 
 // 27. {{messages}} placeholder lets the user inject custom prompt content
 // AFTER the dialog history, disables auto-append, and removes the need for
-// the legacy [助手] cue at the end.
+// the legacy assistant cue at the end.
 {
   const prompt = buildPrompt({
     messages: [
@@ -455,25 +459,25 @@ function check(name, cond, info) {
   });
   check('messages placeholder: header kept', prompt.indexOf('HEADER') !== -1);
   check('messages placeholder: first user content placed',
-    prompt.indexOf('[用户]\nfirst') !== -1);
+    prompt.indexOf(MARKER_USER + '\nfirst') !== -1);
   check('messages placeholder: assistant content placed',
-    prompt.indexOf('[助手]\nok') !== -1);
+    prompt.indexOf(MARKER_ASSISTANT + '\nok') !== -1);
   check('messages placeholder: second user content placed',
-    prompt.indexOf('[用户]\nsecond') !== -1);
+    prompt.indexOf(MARKER_USER + '\nsecond') !== -1);
   check('messages placeholder: AFTER cue sits past dialog',
-    prompt.indexOf('[用户]\nsecond') < prompt.indexOf('AFTER-MSG-CUE'));
+    prompt.indexOf(MARKER_USER + '\nsecond') < prompt.indexOf('AFTER-MSG-CUE'));
   check('messages placeholder: header before dialog',
-    prompt.indexOf('HEADER') < prompt.indexOf('[用户]\nfirst'));
+    prompt.indexOf('HEADER') < prompt.indexOf(MARKER_USER + '\nfirst'));
   check('messages placeholder: no duplicate auto-append',
-    (prompt.match(/\[用户\]\nfirst/g) || []).length === 1);
+    prompt.split(MARKER_USER + '\nfirst').length - 1 === 1);
   check('messages placeholder: literal token replaced',
     prompt.indexOf('{{messages}}') === -1);
-  check('messages placeholder: no trailing [助手] cue',
-    !/\[助手\]\s*$/.test(prompt));
+  check('messages placeholder: no trailing assistant cue',
+    !prompt.trim().endsWith(MARKER_ASSISTANT));
 }
 
 // 28. Template without {{messages}}: falls back to legacy behavior — dialog
-// is appended after the template (and still no trailing [助手] cue, that
+// is appended after the template (and still no trailing assistant cue, that
 // piece was removed unconditionally).
 {
   const prompt = buildPrompt({
@@ -487,11 +491,11 @@ function check(name, cond, info) {
   check('no messages placeholder: header present',
     prompt.indexOf('ONLY HEADER') !== -1);
   check('no messages placeholder: dialog appended',
-    prompt.indexOf('[用户]\nhello') !== -1);
+    prompt.indexOf(MARKER_USER + '\nhello') !== -1);
   check('no messages placeholder: header precedes dialog',
-    prompt.indexOf('ONLY HEADER') < prompt.indexOf('[用户]\nhello'));
-  check('no messages placeholder: prompt ends with dialog, not [助手]',
-    /\[用户\]\nhello\s*$/.test(prompt));
+    prompt.indexOf('ONLY HEADER') < prompt.indexOf(MARKER_USER + '\nhello'));
+  check('no messages placeholder: prompt ends with dialog, not assistant cue',
+    prompt.endsWith(MARKER_USER + '\nhello\n' + MARKER_END_USER));
 }
 
 // 29. {{messages}} placeholder with NO dialog messages collapses cleanly.
@@ -506,12 +510,12 @@ function check(name, cond, info) {
     prompt.indexOf('{{messages}}') === -1);
   check('empty messages: top kept', prompt.indexOf('top') !== -1);
   check('empty messages: bottom kept', prompt.indexOf('bottom') !== -1);
-  check('empty messages: no stray [用户] header',
-    prompt.indexOf('[用户]') === -1);
+  check('empty messages: no stray user header',
+    prompt.indexOf(MARKER_USER) === -1);
 }
 
 // 30. Default template no longer contains the legacy "输出格式硬约束" /
-// trailing [助手] cue, but still produces a complete tool-call protocol.
+// trailing assistant cue, but still produces a complete tool-call protocol.
 {
   const prompt = buildPrompt({
     messages: [{ role: 'user', content: 'hi' }],
@@ -519,8 +523,8 @@ function check(name, cond, info) {
   });
   check('default: no 输出格式硬约束 section',
     prompt.indexOf('输出格式硬约束') === -1);
-  check('default: no trailing [助手] cue',
-    !/\[助手\]\s*$/.test(prompt));
+  check('default: no trailing assistant cue',
+    !prompt.trim().endsWith(MARKER_ASSISTANT));
   check('default: tool-call protocol still present',
     prompt.indexOf('工具调用协议') !== -1);
   check('default: hard rules still present',
