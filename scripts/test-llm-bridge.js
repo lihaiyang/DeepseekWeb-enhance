@@ -259,6 +259,69 @@ async function captureRejection(promise) {
       sent[0].payload.stoppedRetry.prompt === '继续');
   }
 
+  // 9. pi /compact summary requests are standalone LLM calls, but they
+  // should be sent inside the current DeepSeek page session. After the
+  // summary finishes, the next normal request must start a fresh DeepSeek
+  // session with the compacted context.
+  {
+    const { bridge, sent } = makeBridge();
+    const first = bridge.request({
+      body: { messages: [{ role: 'user', content: 'start task' }] },
+      onChunk: () => {},
+    });
+    await sleep(10);
+    let runs = sent.filter((s) => s.channel === 'llm:run');
+    ipcMainStub.emit('llm:content', { requestId: runs[0].payload.requestId, delta: 'ok' });
+    ipcMainStub.emit('llm:end', { requestId: runs[0].payload.requestId });
+    await first;
+
+    const compactSummary = bridge.request({
+      body: {
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a context summarization assistant. ONLY output the structured summary.',
+          },
+          {
+            role: 'user',
+            content: '<conversation>\n[User]: start task\n[Assistant]: ok\n</conversation>\n\n' +
+              'The messages above are a conversation to summarize. Create a structured context checkpoint summary.',
+          },
+        ],
+      },
+      onChunk: () => {},
+    });
+    await sleep(10);
+    runs = sent.filter((s) => s.channel === 'llm:run');
+    const summaryRun = runs[1];
+    ipcMainStub.emit('llm:content', { requestId: summaryRun.payload.requestId, delta: '## Goal\nstart task' });
+    ipcMainStub.emit('llm:end', { requestId: summaryRun.payload.requestId });
+    await compactSummary;
+
+    const afterCompact = bridge.request({
+      body: {
+        messages: [
+          { role: 'user', content: 'Compaction summary: start task' },
+          { role: 'user', content: 'continue after compact' },
+        ],
+      },
+      onChunk: () => {},
+    });
+    await sleep(10);
+    runs = sent.filter((s) => s.channel === 'llm:run');
+    const afterRun = runs[2];
+    ipcMainStub.emit('llm:content', { requestId: afterRun.payload.requestId, delta: 'continued' });
+    ipcMainStub.emit('llm:end', { requestId: afterRun.payload.requestId });
+    await afterCompact;
+
+    check('compact summary: sent in current web session',
+      summaryRun && summaryRun.payload.isContinuation === true);
+    check('compact summary: uses full summary prompt',
+      summaryRun && /structured context checkpoint summary/.test(summaryRun.payload.prompt));
+    check('after compact: starts fresh web session',
+      afterRun && afterRun.payload.isContinuation === false);
+  }
+
   console.log('');
   console.log(pass + ' passed, ' + fail + ' failed');
   process.exit(fail === 0 ? 0 : 1);

@@ -46,6 +46,51 @@ function estimateTokens(text) {
   return Math.ceil(text.length / 3);
 }
 
+function messageContentText(content) {
+  if (content == null) return '';
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map((part) => {
+      if (typeof part === 'string') return part;
+      if (!part || typeof part !== 'object') return '';
+      if (typeof part.text === 'string') return part.text;
+      if (typeof part.content === 'string') return part.content;
+      return '';
+    }).join('');
+  }
+  if (typeof content === 'object') {
+    if (typeof content.text === 'string') return content.text;
+    if (typeof content.content === 'string') return content.content;
+  }
+  return '';
+}
+
+function isPiSummarizationRequest(body) {
+  const messages = Array.isArray(body && body.messages) ? body.messages : [];
+  let hasSummarySystem = false;
+  let hasSummaryUser = false;
+
+  for (const msg of messages) {
+    const text = messageContentText(msg && msg.content);
+    if (!text) continue;
+    if ((msg.role === 'system' || msg.role === 'developer') &&
+        /context summarization assistant/i.test(text) &&
+        /ONLY output the structured summary/i.test(text)) {
+      hasSummarySystem = true;
+    }
+    if (msg.role === 'user' &&
+        (/<conversation>/i.test(text) ||
+         /conversation to summarize/i.test(text) ||
+         /conversation messages to incorporate/i.test(text) ||
+         /structured context checkpoint summary/i.test(text) ||
+         /structured summary of this conversation branch/i.test(text))) {
+      hasSummaryUser = true;
+    }
+  }
+
+  return hasSummarySystem && hasSummaryUser;
+}
+
 class LlmBridge {
   constructor(opts) {
     this._webContents = null;
@@ -126,16 +171,33 @@ class LlmBridge {
     const requestId = ++this._counter;
     let prompt;
     let isContinuation = false;
+    let invalidateSessionAfter = false;
+    const isSummarization = isPiSummarizationRequest(body);
 
     // ─── 会话续接判断 ───────────────────────────────────────────
+    // pi 的 /compact 会先发起一次总结请求。这个请求本身不是原 OpenAI
+    // messages 的追加，但应该发在当前 DeepSeek 网页会话里；总结完成后
+    // 下一次 compact 后的正常请求再新建 DeepSeek 会话。
+    if (isSummarization && this._session.active) {
+      isContinuation = true;
+      invalidateSessionAfter = true;
+      try {
+        const template = this._getTemplate ? this._getTemplate() : undefined;
+        prompt = buildPrompt(body, { template });
+      } catch (err) {
+        this._finishRequest(null, reject, err);
+        return;
+      }
+    }
+
     // 条件：session 活跃 + 未超 token 上限 + 本轮消息数 > 上轮消息数
-    if (this._session.active && this._session.totalChars < MAX_SESSION_CHARS) {
+    if (!prompt && this._session.active && this._session.totalChars < MAX_SESSION_CHARS) {
       if (messages.length > this._session.messageCount) {
         isContinuation = true;
       }
     }
 
-    if (isContinuation) {
+    if (isContinuation && !prompt) {
       // 续接：只格式化增量消息，不重复注入约束/工具/协议
       try {
         const startIndex = this._session.messageCount;
@@ -178,6 +240,7 @@ class LlmBridge {
       prompt,
       model,
       isContinuation,
+      invalidateSessionAfter,
       _body: body,  // 保留原始 body 供 _finalizeAttempt 更新 session
     };
 
@@ -249,6 +312,7 @@ class LlmBridge {
       requestId: handle.requestId,
       promptLen: handle.prompt.length,
       isContinuation: handle.isContinuation,
+      invalidateSessionAfter: handle.invalidateSessionAfter,
       sessionChars: this._session.totalChars,
     });
     const mode = this._getMode ? this._getMode() : 'expert';
@@ -298,16 +362,24 @@ class LlmBridge {
 
     // 更新会话追踪
     if (!hadError) {
-      const body = state.handle._body;
-      const messages = (body && Array.isArray(body.messages)) ? body.messages : [];
-      this._session.messageCount = messages.length;
-      this._session.totalChars += state.handle.prompt.length;
-      this._session.active = true;
-      this._logEvent('llm:session', {
-        messageCount: this._session.messageCount,
-        totalChars: this._session.totalChars,
-        estimatedTokens: estimateTokens(String(this._session.totalChars)),
-      });
+      if (state.handle.invalidateSessionAfter) {
+        this._session = { messageCount: 0, totalChars: 0, active: false };
+        this._logEvent('llm:session', {
+          event: 'invalidated-after-standalone',
+          requestId: state.handle.requestId,
+        });
+      } else {
+        const body = state.handle._body;
+        const messages = (body && Array.isArray(body.messages)) ? body.messages : [];
+        this._session.messageCount = messages.length;
+        this._session.totalChars += state.handle.prompt.length;
+        this._session.active = true;
+        this._logEvent('llm:session', {
+          messageCount: this._session.messageCount,
+          totalChars: this._session.totalChars,
+          estimatedTokens: estimateTokens(String(this._session.totalChars)),
+        });
+      }
     } else if (hadError) {
       // 任何中断/错误后都让下次请求降级为完整 prompt 重建
       this._session.active = false;
