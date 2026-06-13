@@ -1,11 +1,16 @@
 {
   "name": "ds-agent",
-  "version": "1.0.0",
-  "description": "DS Agent — Web-First AI Agent powered by DeepSeek Chat (no API key required)",
+  "version": "0.1.0",
+  "description": "DS Agent — pi-coding-agent harness on top of DeepSeek (no API key required)",
   "main": "src/main/index.js",
   "scripts": {
-    "start": "ELECTRON_RUN_AS_NODE= electron .",
-    "dev": "ELECTRON_RUN_AS_NODE= electron . --dev",
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "test:protocol": "node scripts/test-protocol.js",
+    "test:http": "node scripts/test-http.js",
+    "test:bridge": "node scripts/test-llm-bridge.js",
+    "test:pi": "node scripts/test-pi-integration.js",
+    "test": "npm run test:protocol && npm run test:http && npm run test:bridge && npm run test:pi",
     "build:mac": "electron-builder --mac",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux",
@@ -16,10 +21,15 @@
   "author": "ds-enhance",
   "license": "GPL-3.0",
   "devDependencies": {
-    "electron": "^35.0.0",
+    "electron": "^42.1.0",
     "electron-builder": "^26.0.0"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@homebridge/node-pty-prebuilt-multiarch": "^0.12.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0"
+  },
   "build": {
     "appId": "com.ds-enhance.agent",
     "productName": "DS Agent",
@@ -28,26 +38,70 @@
     },
     "files": [
       "src/**/*",
-      "assets/**/*"
+      "assets/**/*",
+      "package.json",
+      "!**/*.map"
+    ],
+    "asar": true,
+    "npmRebuild": false,
+    "buildDependenciesFromSource": false,
+    "asarUnpack": [
+      "src/main/pty-host.js",
+      "node_modules/@earendil-works/**",
+      "node_modules/@xterm/**",
+      "node_modules/@homebridge/node-pty-prebuilt-multiarch/**",
+      "node_modules/**/build/Release/**",
+      "node_modules/**/prebuilds/**"
     ],
     "mac": {
       "target": [
         {
           "target": "dmg",
-          "arch": ["x64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ],
       "category": "public.app-category.productivity",
-      "icon": "assets/icon.icns"
+      "icon": "assets/icon.icns",
+      "extraResources": [
+        {
+          "from": "vendor/node/darwin-${arch}/",
+          "to": "node/",
+          "filter": [
+            "node"
+          ]
+        },
+        {
+          "from": "vendor/tools/darwin-${arch}/",
+          "to": "tools/"
+        }
+      ]
     },
     "win": {
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "extraResources": [
+        {
+          "from": "vendor/node/win-${arch}/",
+          "to": "node/",
+          "filter": [
+            "node.exe"
+          ]
+        },
+        {
+          "from": "vendor/tools/win-${arch}/",
+          "to": "tools/"
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -60,11 +114,26 @@
       "target": [
         {
           "target": "AppImage",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "category": "Utility",
-      "icon": "assets/icon.png"
+      "icon": "assets/icon.png",
+      "extraResources": [
+        {
+          "from": "vendor/node/linux-${arch}/",
+          "to": "node/",
+          "filter": [
+            "node"
+          ]
+        },
+        {
+          "from": "vendor/tools/linux-${arch}/",
+          "to": "tools/"
+        }
+      ]
     }
   }
 }

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';">
+  <title>DS Agent</title>
+  <link rel="stylesheet" href="../../../node_modules/@xterm/xterm/css/xterm.css">
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; height: 100%; background: #0e0e0f; color: #d8d8d8; font: 13px -apple-system, 'Segoe UI', Roboto, system-ui, sans-serif; }
+    #root { display: flex; flex-direction: column; height: 100vh; }
+    header {
+      display: flex; align-items: center; gap: 12px;
+      padding: 6px 152px 6px 12px;        /* right pad: Win/Linux native window buttons */
+      background: #16161a;
+      border-bottom: 1px solid #26262b;
+      -webkit-app-region: drag;
+    }
+    body.platform-darwin header {
+      padding: 6px 12px 6px 80px;         /* macOS: traffic lights on left */
+    }
+    header .title { font-weight: 600; letter-spacing: 0.3px; opacity: 0.9; }
+    header .spacer { flex: 1; }
+    header button {
+      -webkit-app-region: no-drag;
+      appearance: none; border: 1px solid #2c2c33; background: #1e1e22;
+      color: #d8d8d8; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+      font-size: 12px;
+    }
+    header button:hover { background: #25252b; }
+    header button.active { background: #2a4d7a; border-color: #3a6ea5; }
+    .mode-btn { font-size: 12px; padding: 4px 10px; }
+    .mode-btn.expert { border-color: #6a3a9e; background: #1e1e22; }
+    .mode-btn.expert.active { background: #4a2d7a; border-color: #7a5ea5; }
+    .mode-btn.quick { border-color: #3a7a4a; background: #1e1e22; }
+    .mode-btn.quick.active { background: #2d5a3a; border-color: #4a7a5a; }
+    .path-btn { display: inline-flex; align-items: center; gap: 6px; max-width: 360px; }
+    .path-btn .folder-ico { opacity: 0.8; }
+    .path-btn #workspace-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; max-width: 320px; }
+    #term-host {
+      flex: 1; position: relative; padding: 8px 0 0 8px; overflow: hidden;
+      background: #0e0e0f;
+    }
+    #term { width: 100%; height: 100%; }
+    /* custom scrollbar for xterm viewport */
+    .xterm-viewport::-webkit-scrollbar { width: 6px; }
+    .xterm-viewport::-webkit-scrollbar-track { background: transparent; }
+    .xterm-viewport::-webkit-scrollbar-thumb {
+      background: #3a3a42; border-radius: 3px;
+    }
+    .xterm-viewport::-webkit-scrollbar-thumb:hover { background: #4a4a55; }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <header>
+      <span class="title">DS Agent</span>
+      <button id="btn-workspace" class="path-btn" title="切换 pi 工作目录（将重启 pi）">
+        <span class="folder-ico">📁</span><span id="workspace-label">~</span>
+      </button>
+      <span class="spacer"></span>
+      <button id="btn-mode" class="mode-btn" title="切换快速/专家模式">专家</button>
+      <button id="btn-prompt"   title="编辑注入提示词">提示词</button>
+      <button id="btn-deepseek" title="显示/隐藏 DeepSeek 网页 (Ctrl+Shift+D)">网页</button>
+      <button id="btn-restart"  title="重启 pi 进程">重启 pi</button>
+    </header>
+    <div id="term-host"><div id="term"></div></div>
+  </div>
+
+  <script src="../../../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="../../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="terminal.js"></script>
+</body>
+</html>

@@ -1,33 +1,51 @@
+'use strict';
+
 /**
- * DS Agent — Electron Main Process
+ * DS Agent — Electron Main Process (v2)
  *
- * Responsibilities:
- *  - Window management (main chat window + control panel)
- *  - Tool execution via direct function calls (no HTTP server)
- *  - Request interception (webRequest API)
- *  - IPC bridge between renderer and tools
- *  - System tray
+ * Architecture:
+ *   - Main window:  terminal HTML hosting xterm.js + pi pty
+ *   - DeepSeek:     hidden BrowserView attached to the main window;
+ *                   exposed via a "显示 DeepSeek" toggle in the terminal UI
+ *   - HTTP shim:    127.0.0.1 server speaking OpenAI Chat Completions,
+ *                   bridged via LlmBridge → DeepSeek BrowserView → DeepSeekClient
+ *   - pi:           spawned with PI_CODING_AGENT_DIR pointing at userData/pi-home,
+ *                   models.json pre-written to point at the HTTP shim
  */
 
-const { app, BrowserWindow, ipcMain, session, Tray, Menu, nativeImage, shell, dialog } = require('electron');
+const {
+  app, BrowserWindow, BrowserView, session, Tray, Menu, nativeImage,
+  globalShortcut, shell, ipcMain, dialog
+} = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
-// ─── Constants ────────────────────────────────────────────────
+const { LlmBridge } = require('./llm-bridge');
+const { createHttpServer } = require('./http-server');
+const { DEFAULT_TEMPLATE: DEFAULT_PROMPT_TEMPLATE } = require('./protocol/build-prompt');
+const piHome = require('./pi-home');
+const { PiRunner } = require('./pi-runner');
+
+// ─── Constants ───────────────────────────────────────────────────────
 const IS_DEV = process.argv.includes('--dev');
-const CHAT_URLS = [
-  'https://chat.deepseek.com',
-  'https://chatgpt.com',
-  'https://chat.openai.com',
-];
-const DEFAULT_CHAT_URL = CHAT_URLS[0];
-
-// ─── Browser Fingerprint ─────────────────────────────────────
-// Mimic a standard Chrome browser to avoid "risky environment" warnings.
-// Electron's default UA contains "Electron/XX.X.X" which is easily flagged.
-
+const DEEPSEEK_URL = 'https://chat.deepseek.com';
+const HEADER_HEIGHT = 36;
 const CHROME_VERSION = '135.0.0.0';
-// Platform-specific UA string — matches what a real Chrome browser would send
+
+// Native title-bar replacement. On Windows/Linux Chromium draws the
+// min/max/close buttons inside an overlay area that respects our colours;
+// on macOS the traffic-light buttons are kept automatically.
+const TITLE_BAR_CONFIG = {
+  titleBarStyle: 'hidden',
+  titleBarOverlay: process.platform === 'darwin'
+    ? undefined
+    : { color: '#16161a', symbolColor: '#d8d8d8', height: HEADER_HEIGHT },
+  // Hide the traffic lights on macOS keeps things uniform; leave them
+  // visible (default) so users still have OS-level window controls.
+  trafficLightPosition: process.platform === 'darwin' ? { x: 10, y: 10 } : undefined,
+};
+
 const PLATFORM_UA = process.platform === 'win32'
   ? 'Windows NT 10.0; Win64; x64'
   : process.platform === 'darwin'
@@ -35,367 +53,427 @@ const PLATFORM_UA = process.platform === 'win32'
     : 'X11; Linux x86_64';
 const CHROME_UA = `Mozilla/5.0 (${PLATFORM_UA}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION} Safari/537.36`;
 
+// ─── State ───────────────────────────────────────────────────────────
 let mainWindow = null;
-let controlPanel = null;
+let dsView = null;
 let tray = null;
 let isQuitting = false;
+let deepseekVisible = false;
+let bridge = null;
+let httpServer = null;
+let httpPort = 0;
+let runner = null;
+let logStream = null;
+let promptEditorWindow = null;
 
-// ─── Tool Handler (direct require, no HTTP) ──────────────────
-// Pre-load the tool handler so it's ready when IPC calls come in.
-const { getToolList, handleToolCall, getWorkspace, setWorkspace } = require('../server/mcp-handler');
+function defaultMode() { return 'expert'; }
+function getMode() { return loadConfig().mode || defaultMode(); }
+function setMode(v) {
+  const valid = (v === 'quick' || v === 'expert') ? v : defaultMode();
+  saveConfig({ mode: valid });
+  return valid;
+}
 
-console.log(`[DS Agent] Tool handler loaded — ${getToolList().length} tools available`);
+// ─── F12 DevTools ────────────────────────────────────────────────────
+function enableDevToolsShortcut(wc) {
+  wc.on('before-input-event', (event, input) => {
+    if (input.key === 'F12' && input.type === 'keyDown') {
+      wc.toggleDevTools();
+    }
+  });
+}
 
-// ─── Session Setup ──────────────────────────────────────────
-// Configure the default session to look like a normal Chrome browser.
-function setupSession() {
+// ─── Context menu ────────────────────────────────────────────────────
+function showContextMenu(webContents, params) {
+  const hasSelection = params.selectionText && params.selectionText.trim().length > 0;
+  const canCopy = hasSelection || params.editFlags.canCopy;
+  const template = [
+    { label: '复制', enabled: canCopy, accelerator: 'CmdOrCtrl+C',
+      click: () => { if (hasSelection) webContents.copy(); } },
+    { label: '粘贴', enabled: params.editFlags.canPaste, accelerator: 'CmdOrCtrl+V',
+      click: () => webContents.paste() },
+    { type: 'separator' },
+    { label: '全选', enabled: params.editFlags.canSelectAll, accelerator: 'CmdOrCtrl+A',
+      click: () => webContents.selectAll() },
+  ];
+  const menu = Menu.buildFromTemplate(template);
+  menu.popup({ window: BrowserWindow.fromWebContents(webContents) });
+}
+
+// ─── Logging ─────────────────────────────────────────────────────────
+function getLogPath() {
+  const dir = path.join(os.homedir(), '.ds-agent', 'log');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, 'ds-agent.log');
+}
+
+function log(tag, payload) {
+  try {
+    if (!logStream) logStream = fs.createWriteStream(getLogPath(), { flags: 'a' });
+    const line = JSON.stringify({ t: Date.now(), tag, ...payload }) + '\n';
+    logStream.write(line);
+    if (IS_DEV) console.log('[' + tag + ']', payload);
+  } catch (_) {}
+}
+
+// ─── Persistent app config ───────────────────────────────────────────
+function appConfigPath() {
+  return path.join(app.getPath('userData'), 'app-config.json');
+}
+function loadConfig() {
+  try { return JSON.parse(fs.readFileSync(appConfigPath(), 'utf-8')); }
+  catch (_) { return {}; }
+}
+function saveConfig(patch) {
+  const cur = loadConfig();
+  const next = Object.assign({}, cur, patch);
+  try { fs.writeFileSync(appConfigPath(), JSON.stringify(next, null, 2), 'utf-8'); }
+  catch (e) { log('config', { event: 'save-failed', message: e.message }); }
+  return next;
+}
+function defaultWorkspace() {
+  return os.homedir();
+}
+
+// ─── Prompt template (user-overridable) ──────────────────────────────
+function getCurrentPromptTemplate() {
+  const t = loadConfig().promptTemplate;
+  return (typeof t === 'string' && t.trim()) ? t : DEFAULT_PROMPT_TEMPLATE;
+}
+
+function setCurrentPromptTemplate(template) {
+  if (typeof template !== 'string') return;
+  // Empty / whitespace-only → treat as "reset to default".
+  if (!template.trim()) {
+    const cur = loadConfig();
+    delete cur.promptTemplate;
+    try { fs.writeFileSync(appConfigPath(), JSON.stringify(cur, null, 2), 'utf-8'); } catch (_) {}
+    log('prompt', { event: 'cleared' });
+    return;
+  }
+  saveConfig({ promptTemplate: template });
+  log('prompt', { event: 'updated', length: template.length });
+}
+
+// ─── Anti-fingerprint session config ─────────────────────────────────
+function configureSession() {
   const ses = session.defaultSession;
-
-  // 1. Override User-Agent for ALL requests (navigation, fetch, XHR, etc.)
   ses.setUserAgent(CHROME_UA);
-
-  // 2. Intercept webRequest to strip Electron-specific headers
   ses.webRequest.onBeforeSendHeaders((details, callback) => {
-    // Remove headers that leak Electron identity
-    delete details.requestHeaders['Sec-CH-UA'];
-    // Set a standard Chrome Sec-CH-UA
+    const major = CHROME_VERSION.split('.')[0];
     details.requestHeaders['Sec-CH-UA'] =
-      `"Chromium";v="${CHROME_VERSION.split('.')[0]}", "Google Chrome";v="${CHROME_VERSION.split('.')[0]}"`;
+      `"Chromium";v="${major}", "Google Chrome";v="${major}"`;
     details.requestHeaders['Sec-CH-UA-Platform'] =
-      process.platform === 'win32' ? '"Windows"' : process.platform === 'darwin' ? '"macOS"' : '"Linux"';
+      process.platform === 'win32' ? '"Windows"' :
+      process.platform === 'darwin' ? '"macOS"' : '"Linux"';
     details.requestHeaders['Sec-CH-UA-Mobile'] = '?0';
-    // Ensure User-Agent is consistent
     details.requestHeaders['User-Agent'] = CHROME_UA;
     callback({ requestHeaders: details.requestHeaders });
   });
-
-  console.log('[DS Agent] Session configured — UA set to Chrome-like');
 }
 
-// ─── Main Window ─────────────────────────────────────────────
+// ─── Window construction ─────────────────────────────────────────────
+function iconPath() {
+  const ext = process.platform === 'win32' ? 'ico' : process.platform === 'darwin' ? 'icns' : 'png';
+  const candidates = [
+    path.join(__dirname, '..', '..', 'assets', `icon.${ext}`),
+    path.join(process.resourcesPath || '', 'assets', `icon.${ext}`),
+    path.join(__dirname, '..', '..', 'assets', 'icon.png'),
+  ];
+  for (const p of candidates) if (p && fs.existsSync(p)) return p;
+  return candidates[0];
+}
+
 function createMainWindow() {
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    title: 'DS Agent',
-    icon: getIconPath(),
+    width: 1400, height: 900, title: 'DS Agent', icon: iconPath(),
+    backgroundColor: '#0e0e0f',
+    ...TITLE_BAR_CONFIG,
+    webPreferences: {
+      preload: path.join(__dirname, '..', 'preload', 'terminal.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+
+  mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'terminal', 'index.html'));
+
+  if (IS_DEV) mainWindow.webContents.openDevTools({ mode: 'detach' });
+  enableDevToolsShortcut(mainWindow.webContents);
+
+  // Context menu is handled by the renderer (terminal.js) so xterm
+  // selection can be captured — webContents.context-menu fires only
+  // for DOM-level selection, which xterm bypasses.
+
+  mainWindow.on('resize', () => syncDsViewBounds());
+  mainWindow.on('close', (e) => {
+    if (!isQuitting) { e.preventDefault(); mainWindow.hide(); }
+  });
+  mainWindow.on('closed', () => { mainWindow = null; });
+}
+
+function createDeepSeekView() {
+  dsView = new BrowserView({
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'index.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      webviewTag: true,
     },
   });
+  mainWindow.setBrowserView(dsView);
+  // Start with zero-size bounds so the view runs invisibly but the page
+  // (preload, login cookies, etc.) stays alive across visibility toggles.
+  dsView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+  dsView.webContents.loadURL(DEEPSEEK_URL);
 
-  mainWindow.loadURL(DEFAULT_CHAT_URL);
-
-  // NOTE: Network hooks (fetch/XHR) and agent script injection are handled
-  // by preload.js via <script> tag injection into the MAIN WORLD.
-  // The preload runs before the page's own JavaScript, ensuring hooks are
-  // installed early enough. No document.write() is used (it causes white screen).
-
-  // Re-inject agent script on in-page navigation (e.g., SPA route changes)
-  mainWindow.webContents.on('did-navigate-in-page', () => {
-    const url = mainWindow.webContents.getURL();
-    if (CHAT_URLS.some(chatUrl => url.includes(new URL(chatUrl).hostname))) {
-      mainWindow.webContents.executeJavaScript(`
-        if (window.dsAgent && !document.getElementById('ds-agent-injected')) {
-          // Agent script will be re-injected by preload on next load
-          console.log('[DS Agent] In-page navigation detected, agent still active');
-        }
-      `).catch(() => {});
-    }
+  dsView.webContents.on('did-finish-load', () => {
+    log('deepseek', { event: 'did-finish-load', url: dsView.webContents.getURL() });
   });
 
-  // Open DevTools in dev mode
-  if (IS_DEV) {
-    mainWindow.webContents.openDevTools({ mode: 'detach' });
-  }
-
-  mainWindow.on('close', (e) => {
-    if (!isQuitting) {
-      e.preventDefault();
-      mainWindow.hide();
-    }
-  });
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
+  enableDevToolsShortcut(dsView.webContents);
+  dsView.webContents.on('context-menu', (e, params) => {
+    showContextMenu(dsView.webContents, params);
   });
 }
 
-// ─── Control Panel Window ────────────────────────────────────
-function createControlPanel() {
-  if (controlPanel) {
-    controlPanel.focus();
+function syncDsViewBounds() {
+  if (!mainWindow || !dsView) return;
+  if (!deepseekVisible) {
+    dsView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
     return;
   }
+  const [w, h] = mainWindow.getContentSize();
+  dsView.setBounds({
+    x: 0, y: HEADER_HEIGHT,
+    width: w,
+    height: Math.max(0, h - HEADER_HEIGHT),
+  });
+}
 
-  controlPanel = new BrowserWindow({
-    width: 480,
-    height: 640,
-    title: 'DS Agent — Control Panel',
-    parent: mainWindow,
+function setDeepseekVisible(vis) {
+  deepseekVisible = !!vis;
+  syncDsViewBounds();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('view:deepseek-visible', deepseekVisible);
+  }
+  if (deepseekVisible && dsView) {
+    try { dsView.webContents.focus(); } catch (_) {}
+  } else if (mainWindow) {
+    try { mainWindow.webContents.focus(); } catch (_) {}
+  }
+  log('view', { deepseekVisible });
+}
+
+// ─── Prompt editor window ────────────────────────────────────────────
+function openPromptEditor() {
+  if (promptEditorWindow && !promptEditorWindow.isDestroyed()) {
+    promptEditorWindow.show();
+    promptEditorWindow.focus();
+    return;
+  }
+  promptEditorWindow = new BrowserWindow({
+    width: 900, height: 720,
+    title: '提示词编辑',
+    parent: mainWindow || undefined,
+    modal: false,
+    backgroundColor: '#0e0e0f',
+    autoHideMenuBar: true,
+    ...TITLE_BAR_CONFIG,
     webPreferences: {
-      preload: path.join(__dirname, '..', 'preload', 'index.js'),
+      preload: path.join(__dirname, '..', 'preload', 'prompt-editor.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
     },
   });
-
-  controlPanel.loadFile(path.join(__dirname, '..', 'renderer', 'control-panel.html'));
-
-  controlPanel.on('closed', () => {
-    controlPanel = null;
+  promptEditorWindow.loadFile(path.join(__dirname, '..', 'renderer', 'prompt-editor', 'index.html'));
+  if (IS_DEV) promptEditorWindow.webContents.openDevTools({ mode: 'detach' });
+  enableDevToolsShortcut(promptEditorWindow.webContents);
+  promptEditorWindow.webContents.on('context-menu', (e, params) => {
+    showContextMenu(promptEditorWindow.webContents, params);
   });
+  promptEditorWindow.on('closed', () => { promptEditorWindow = null; });
 }
 
-// ─── System Tray ─────────────────────────────────────────────
+// ─── Tray ────────────────────────────────────────────────────────────
 function createTray() {
-  const icon = nativeImage.createFromPath(getIconPath());
-  tray = new Tray(icon.resize({ width: 16, height: 16 }));
-
-  const contextMenu = Menu.buildFromTemplate([
-    { label: '打开 DS Agent', click: () => mainWindow?.show() },
-    { label: '控制面板', click: () => createControlPanel() },
+  const icon = nativeImage.createFromPath(iconPath());
+  tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon.resize({ width: 16, height: 16 }));
+  const menu = Menu.buildFromTemplate([
+    { label: '显示主窗口', click: () => mainWindow && mainWindow.show() },
+    { label: '显示 DeepSeek', click: () => { mainWindow && mainWindow.show(); setDeepseekVisible(true); } },
+    { label: '终端',     click: () => setDeepseekVisible(false) },
     { type: 'separator' },
-    { label: 'DeepSeek', click: () => mainWindow?.loadURL('https://chat.deepseek.com') },
-    { label: 'ChatGPT', click: () => mainWindow?.loadURL('https://chatgpt.com') },
-    { type: 'separator' },
-    { label: '退出', click: () => { isQuitting = true; tray?.destroy(); tray = null; app.quit(); } },
+    { label: '退出', click: () => { isQuitting = true; tray.destroy(); tray = null; app.quit(); } },
   ]);
-
   tray.setToolTip('DS Agent');
-  tray.setContextMenu(contextMenu);
-  tray.on('double-click', () => mainWindow?.show());
+  tray.setContextMenu(menu);
+  tray.on('double-click', () => mainWindow && mainWindow.show());
 }
 
-// ─── Request Interception ────────────────────────────────────
-// NOTE: Request body modification (injecting tool hints) is now handled in the
-// renderer process via fetch/XHR hooks. This is more reliable than webRequest API
-// because webRequest.onBeforeRequest cannot reliably modify uploadData in all
-// Electron versions, and the renderer hooks can access the same modified body
-// that the original userscript used.
-
-function setupRequestInterception() {
-  // Logging only — actual body modification is done in renderer agent.js
-  if (IS_DEV) {
-    const ses = mainWindow.webContents.session;
-    ses.webRequest.onCompleted(
-      { urls: ['*://chat.deepseek.com/api/v0/*', '*://chatgpt.com/backend-api/*'] },
-      (details) => {
-        console.log(`[DS Agent] ${details.method} ${details.url} → ${details.statusCode}`);
-      }
-    );
-  }
-}
-
-// ─── IPC Handlers ────────────────────────────────────────────
-
-function setupIPC() {
-  // MCP tool calls from renderer (direct function call, no HTTP)
-  ipcMain.handle('mcp:call-tool', async (_event, toolName, args) => {
+// ─── IPC ─────────────────────────────────────────────────────────────
+function wireIpc() {
+  ipcMain.on('debug:log', (_e, line) => {
     try {
-      const resultText = await handleToolCall(toolName, args);
-      return {
-        success: true,
-        data: {
-          content: [{ type: 'text', text: String(resultText) }],
-          isError: false,
-        },
-      };
-    } catch (err) {
-      return {
-        success: true,
-        data: {
-          content: [{ type: 'text', text: `工具执行异常: ${err.message}` }],
-          isError: true,
-        },
-      };
-    }
+      if (!logStream) logStream = fs.createWriteStream(getLogPath(), { flags: 'a' });
+      logStream.write(line + '\n');
+    } catch (_) {}
   });
 
-  // Get tool list
-  ipcMain.handle('mcp:list-tools', async () => {
-    try {
-      return { success: true, data: getToolList() };
-    } catch (err) {
-      return { success: false, error: err.message };
-    }
-  });
+  ipcMain.on('view:show-deepseek', () => setDeepseekVisible(true));
+  ipcMain.on('view:hide-deepseek', () => setDeepseekVisible(false));
+  ipcMain.handle('view:is-deepseek-visible', () => deepseekVisible);
 
-  // Health check (no port — pure IPC, no HTTP server)
-  ipcMain.handle('mcp:health', async () => {
-    try {
-      const tools = getToolList();
-      return { success: true, tools: tools.length };
-    } catch {
-      return { success: true, tools: 0 };
-    }
-  });
-
-  // Update tool hint (called by renderer when tool registry changes)
-  // Kept for backward compat, though renderer now handles request modification itself
-  ipcMain.on('agent:update-tool-hint', (_event, hint) => {
-    globalThis._currentToolHint = hint;
-  });
-
-  // Open control panel
-  ipcMain.handle('ui:open-control-panel', () => {
-    createControlPanel();
-  });
-
-  // Workspace management
+  // Workspace controls — choose pi's cwd; restart pi to apply
   ipcMain.handle('workspace:get', () => {
-    return getWorkspace();
+    return runner ? (runner.getCwd() || defaultWorkspace()) : defaultWorkspace();
   });
-
-  ipcMain.handle('workspace:set', (_event, newPath) => {
-    const result = setWorkspace(newPath);
-    // If successful, persist to config
-    if (!result.startsWith('错误') && !result.startsWith('切换工作目录失败')) {
-      const data = loadConfig();
-      data.workspace = getWorkspace();
-      saveConfig(data);
-    }
-    return result;
-  });
-
-  ipcMain.handle('workspace:select-folder', async () => {
-    const result = await dialog.showOpenDialog({
+  ipcMain.handle('workspace:choose', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
       title: '选择工作目录',
       properties: ['openDirectory', 'createDirectory'],
+      defaultPath: runner ? runner.getCwd() : defaultWorkspace(),
     });
-    if (result.canceled || result.filePaths.length === 0) {
-      return null;
+    if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
+      return { changed: false, cwd: runner ? runner.getCwd() : defaultWorkspace() };
     }
-    const selectedPath = result.filePaths[0];
-    const setResult = setWorkspace(selectedPath);
-    if (!setResult.startsWith('错误') && !setResult.startsWith('切换工作目录失败')) {
-      const data = loadConfig();
-      data.workspace = getWorkspace();
-      saveConfig(data);
+    const newCwd = result.filePaths[0];
+    if (runner) {
+      runner.setCwd(newCwd);
+      try { await runner.restart(); } catch (e) { log('workspace', { event: 'restart-failed', message: e.message }); }
     }
-    return getWorkspace();
-  });
-
-  // Navigate to a chat site
-  ipcMain.handle('nav:goto', (_event, url) => {
-    if (mainWindow) {
-      mainWindow.loadURL(url);
+    saveConfig({ workspace: newCwd });
+    log('workspace', { event: 'changed', cwd: newCwd });
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('workspace:changed', newCwd);
     }
+    return { changed: true, cwd: newCwd };
   });
 
-  // Get current URL
-  ipcMain.handle('nav:get-url', () => {
-    return mainWindow?.webContents.getURL() || '';
+  // Prompt template editor
+  ipcMain.on('prompt:open-editor', () => openPromptEditor());
+  ipcMain.handle('prompt:get-current', () => getCurrentPromptTemplate());
+  ipcMain.handle('prompt:get-default', () => DEFAULT_PROMPT_TEMPLATE);
+  ipcMain.handle('prompt:is-custom', () => {
+    const t = loadConfig().promptTemplate;
+    return typeof t === 'string' && t.trim().length > 0;
+  });
+  ipcMain.handle('prompt:set', (_e, template) => {
+    setCurrentPromptTemplate(typeof template === 'string' ? template : '');
+    return true;
+  });
+  ipcMain.handle('prompt:reset', () => {
+    setCurrentPromptTemplate('');
+    return true;
   });
 
-  // Detect which chat site is active
-  ipcMain.handle('nav:detect-site', () => {
-    const url = mainWindow?.webContents.getURL() || '';
-    if (url.includes('chat.deepseek.com')) return 'deepseek';
-    if (url.includes('chatgpt.com') || url.includes('chat.openai.com')) return 'chatgpt';
-    return 'unknown';
+  // Context menu for xterm (non-DOM selection)
+  ipcMain.on('contextmenu:show', (event, payload) => {
+    const wc = event.sender;
+    const hasSelection = payload && typeof payload.selection === 'string' && payload.selection.length > 0;
+    const template = [
+      { label: '复制', enabled: hasSelection,
+        click: () => wc.send('contextmenu:action', 'copy') },
+      { type: 'separator' },
+      { label: '粘贴',
+        click: () => wc.send('contextmenu:action', 'paste') },
+      { label: '全选',
+        click: () => wc.send('contextmenu:action', 'selectAll') },
+    ];
+    const menu = Menu.buildFromTemplate(template);
+    const win = BrowserWindow.fromWebContents(wc);
+    menu.popup({ window: win, x: payload.x, y: payload.y });
   });
 
-  // Config management — simple JSON file store (electron-store v10 is ESM-only)
-  const configPath = path.join(app.getPath('userData'), 'agent-config.json');
-
-  function loadConfig() {
-    try {
-      return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    } catch { return {}; }
-  }
-
-  function saveConfig(data) {
-    fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
-  }
-
-  ipcMain.handle('config:get', (_event, key) => {
-    return loadConfig()[key];
-  });
-
-  ipcMain.handle('config:set', (_event, key, value) => {
-    const data = loadConfig();
-    data[key] = value;
-    saveConfig(data);
+  // Agent mode toggle (expert / quick)
+  ipcMain.handle('mode:get', () => getMode());
+  ipcMain.on('mode:set', (_e, v) => {
+    const next = setMode(v);
+    log('mode', { event: 'changed', mode: next });
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('mode:changed', next);
+    }
   });
 }
 
-// ─── Helpers ─────────────────────────────────────────────────
-
-function getIconPath() {
-  const ext = process.platform === 'win32' ? 'ico' : process.platform === 'darwin' ? 'icns' : 'png';
-  const iconPath = path.join(__dirname, '..', '..', 'assets', `icon.${ext}`);
-  // In packaged app, resources are in process.resourcesPath
-  if (!fs.existsSync(iconPath)) {
-    const packagedPath = path.join(process.resourcesPath, 'assets', `icon.${ext}`);
-    if (fs.existsSync(packagedPath)) return packagedPath;
-    // Fallback: try PNG which is the most universal
-    const pngPath = path.join(__dirname, '..', '..', 'assets', 'icon.png');
-    if (fs.existsSync(pngPath)) return pngPath;
-    const packagedPng = path.join(process.resourcesPath, 'assets', 'icon.png');
-    if (fs.existsSync(packagedPng)) return packagedPng;
-  }
-  return iconPath;
-}
-
-// ─── App Lifecycle ───────────────────────────────────────────
-
+// ─── App lifecycle ───────────────────────────────────────────────────
 app.whenReady().then(async () => {
-  // 0. Setup session (UA, headers) BEFORE any window is created
-  setupSession();
+  // Drop the default File/Edit/View menu bar — we don't expose any actions
+  // through it. This affects every BrowserWindow this app creates.
+  Menu.setApplicationMenu(null);
 
-  // 1. Setup IPC (tool handlers are already loaded via require)
-  setupIPC();
+  configureSession();
+  wireIpc();
 
-  // 1.5 Restore workspace from saved config
-  try {
-    const configPath = path.join(app.getPath('userData'), 'agent-config.json');
-    const savedConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    if (savedConfig.workspace) {
-      setWorkspace(savedConfig.workspace);
-    }
-  } catch { /* no config yet, use default */ }
+  // 1. Bridge + HTTP server (must bind before pi-home.prepare writes the port)
+  bridge = new LlmBridge({
+    getTemplate: getCurrentPromptTemplate,
+    getMode: getMode,
+    log: (tag, p) => log(tag, p || {}),
+  });
+  httpServer = createHttpServer({ bridge, log: (tag, p) => log('http', { tag, ...(p || {}) }) });
+  httpPort = await httpServer.listen();
+  log('http', { event: 'listening', port: httpPort });
 
-  // 2. Create main window
+  // 2. pi-home configuration referring to the chosen port
+  const piEnv = piHome.prepare(httpPort);
+  log('pi-home', piEnv);
+
+  // 3. Main terminal window
   createMainWindow();
 
-  // 3. Setup request interception
-  setupRequestInterception();
+  // 4. DeepSeek view (visible by default — user toggles back to terminal)
+  createDeepSeekView();
+  bridge.attach(dsView.webContents);
+  setDeepseekVisible(true);
 
-  // 4. Create tray (after window is ready)
+  // 5. pi runner (spawned on demand when renderer asks)
+  const persistedWorkspace = loadConfig().workspace || defaultWorkspace();
+  runner = new PiRunner({ piHome: piEnv.piHome, cwd: persistedWorkspace });
+  mainWindow.webContents.once('did-finish-load', () => {
+    runner.attachRenderer(mainWindow.webContents);
+  });
+
+  // 6. Tray
   createTray();
 
-  console.log(`[DS Agent] Application ready — pure IPC mode, workspace: ${getWorkspace()}`);
+  // 7. Global toggle shortcut
+  globalShortcut.register('CommandOrControl+Shift+D', () => {
+    if (!mainWindow) return;
+    mainWindow.show();
+    setDeepseekVisible(!deepseekVisible);
+  });
+
+  log('app', { event: 'ready', port: httpPort, piHome: piEnv.piHome, model: piEnv.modelId });
 });
 
 app.on('window-all-closed', () => {
-  if (!tray) {
-    app.quit();
-  }
+  if (!tray) app.quit();
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', async (e) => {
+  if (isQuitting) return;
   isQuitting = true;
+  e.preventDefault();
+  try {
+    globalShortcut.unregisterAll();
+    if (runner) await runner.dispose();
+    if (httpServer) await httpServer.close();
+  } catch (_) {}
+  if (logStream) { try { logStream.end(); } catch (_) {} }
+  app.exit(0);
 });
 
 app.on('activate', () => {
-  if (mainWindow) {
-    mainWindow.show();
-  } else {
-    createMainWindow();
-  }
+  if (mainWindow) mainWindow.show();
+  else createMainWindow();
 });
 
-// Prevent navigation to unsupported URLs
 app.on('web-contents-created', (_event, contents) => {
   contents.setWindowOpenHandler(({ url }) => {
-    // Open external links in system browser
-    if (!url.includes('chat.deepseek.com') && !url.includes('chatgpt.com') && !url.includes('chat.openai.com')) {
+    if (!url.includes('chat.deepseek.com')) {
       shell.openExternal(url);
       return { action: 'deny' };
     }
