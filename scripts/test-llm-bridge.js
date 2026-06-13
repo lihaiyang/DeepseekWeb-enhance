@@ -44,14 +44,21 @@ function makeBridge(opts) {
 }
 
 function deltaContent(chunks) {
-  return chunks.map((c) => c.choices[0].delta.content).filter((x) => typeof x === 'string').join('');
+  return chunks.map((c) => {
+    const choice = c.choices && c.choices[0];
+    return choice && choice.delta && choice.delta.content;
+  }).filter((x) => typeof x === 'string').join('');
 }
 function deltaReasoning(chunks) {
-  return chunks.map((c) => c.choices[0].delta.reasoning_content).filter((x) => typeof x === 'string').join('');
+  return chunks.map((c) => {
+    const choice = c.choices && c.choices[0];
+    return choice && choice.delta && choice.delta.reasoning_content;
+  }).filter((x) => typeof x === 'string').join('');
 }
 function finishReason(chunks) {
   for (let i = chunks.length - 1; i >= 0; i--) {
-    const fr = chunks[i].choices[0].finish_reason;
+    const choice = chunks[i].choices && chunks[i].choices[0];
+    const fr = choice && choice.finish_reason;
     if (fr) return fr;
   }
   return null;
@@ -59,13 +66,20 @@ function finishReason(chunks) {
 function toolCallNames(chunks) {
   const names = new Set();
   for (const c of chunks) {
-    const tcs = c.choices[0].delta.tool_calls;
+    const choice = c.choices && c.choices[0];
+    const tcs = choice && choice.delta && choice.delta.tool_calls;
     if (!tcs) continue;
     for (const tc of tcs) {
       if (tc && tc.function && tc.function.name) names.add(tc.function.name);
     }
   }
   return Array.from(names);
+}
+function lastUsage(chunks) {
+  for (let i = chunks.length - 1; i >= 0; i--) {
+    if (chunks[i] && chunks[i].usage) return chunks[i].usage;
+  }
+  return null;
 }
 
 async function captureRejection(promise) {
@@ -99,6 +113,14 @@ async function captureRejection(promise) {
       'saw "' + contentBeforeEnd + '" before end');
     check('happy: full content reaches user', deltaContent(collected) === '答案是 42');
     check('happy: finish_reason stop', finishReason(collected) === 'stop');
+    check('happy: usage emitted', !!lastUsage(collected));
+    check('happy: usage has prompt tokens',
+      lastUsage(collected) && lastUsage(collected).prompt_tokens > 0);
+    check('happy: usage has completion tokens',
+      lastUsage(collected) && lastUsage(collected).completion_tokens > 0);
+    check('happy: CJK completion tokens not undercounted as chars/3',
+      lastUsage(collected) && lastUsage(collected).completion_tokens >= 4,
+      lastUsage(collected) && String(lastUsage(collected).completion_tokens));
   }
 
   // 2. Thinking-only then end — reject as a bad upstream response. pi needs
@@ -320,6 +342,47 @@ async function captureRejection(promise) {
       summaryRun && /structured context checkpoint summary/.test(summaryRun.payload.prompt));
     check('after compact: starts fresh web session',
       afterRun && afterRun.payload.isContinuation === false);
+  }
+
+  // 10. Usage prompt tokens should track the reused DeepSeek page context,
+  // not only the incremental continuation prompt.
+  {
+    const { bridge, sent } = makeBridge();
+    const firstChunks = [];
+    const first = bridge.request({
+      body: { messages: [{ role: 'user', content: 'a'.repeat(1200) }] },
+      onChunk: (c) => firstChunks.push(c),
+    });
+    await sleep(10);
+    let runs = sent.filter((s) => s.channel === 'llm:run');
+    ipcMainStub.emit('llm:content', { requestId: runs[0].payload.requestId, delta: 'b'.repeat(900) });
+    ipcMainStub.emit('llm:end', { requestId: runs[0].payload.requestId });
+    await first;
+
+    const secondChunks = [];
+    const second = bridge.request({
+      body: {
+        messages: [
+          { role: 'user', content: 'a'.repeat(1200) },
+          { role: 'assistant', content: 'b'.repeat(900) },
+          { role: 'user', content: 'next' },
+        ],
+      },
+      onChunk: (c) => secondChunks.push(c),
+    });
+    await sleep(10);
+    runs = sent.filter((s) => s.channel === 'llm:run');
+    ipcMainStub.emit('llm:content', { requestId: runs[1].payload.requestId, delta: 'ok' });
+    ipcMainStub.emit('llm:end', { requestId: runs[1].payload.requestId });
+    await second;
+
+    const u1 = lastUsage(firstChunks);
+    const u2 = lastUsage(secondChunks);
+    check('usage context: first usage present', !!u1);
+    check('usage context: second usage present', !!u2);
+    check('usage context: continuation prompt includes prior page context',
+      u1 && u2 && u2.prompt_tokens > u1.prompt_tokens,
+      u1 && u2 ? (u1.prompt_tokens + ' -> ' + u2.prompt_tokens) : '');
   }
 
   console.log('');

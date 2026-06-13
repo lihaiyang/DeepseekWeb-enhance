@@ -65,8 +65,10 @@ function aggregateChunks(chunks, model) {
   let reasoning = '';
   const toolCallsByIndex = new Map();
   let finishReason = 'stop';
+  let usage = null;
 
   for (const c of chunks) {
+    if (c && c.usage) usage = c.usage;
     const choice = c.choices && c.choices[0];
     if (!choice) continue;
     const d = choice.delta || {};
@@ -102,10 +104,12 @@ function aggregateChunks(chunks, model) {
     message.content = content || null;
   }
 
-  return {
+  const out = {
     id, object: 'chat.completion', created: nowSeconds(), model,
     choices: [{ index: 0, message, finish_reason: finishReason }],
   };
+  if (usage) out.usage = usage;
+  return out;
 }
 
 function writeSseHeaders(res) {

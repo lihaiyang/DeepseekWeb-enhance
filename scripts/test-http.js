@@ -22,6 +22,11 @@ class FakeBridge {
         id, object: 'chat.completion.chunk', created, model,
         choices: [{ index: 0, delta, finish_reason: finishReason == null ? null : finishReason }],
       });
+      const sendUsage = (usage) => onChunk({
+        id, object: 'chat.completion.chunk', created, model,
+        choices: [],
+        usage,
+      });
       let i = 0;
       const tick = () => {
         if (signal && signal.aborted) return reject(new Error('aborted'));
@@ -31,6 +36,7 @@ class FakeBridge {
         if (step.content !== undefined) send({ content: step.content });
         if (step.tool_call) send({ tool_calls: [step.tool_call] });
         if (step.finish_reason !== undefined) send({}, step.finish_reason);
+        if (step.usage) sendUsage(step.usage);
         setImmediate(tick);
       };
       tick();
@@ -99,6 +105,7 @@ function check(name, cond, info) {
     { tool_call: { index: 0, id: 'call_1', type: 'function', function: { name: 'ls', arguments: '' } } },
     { tool_call: { index: 0, function: { arguments: '{"path":"."}' } } },
     { finish_reason: 'tool_calls' },
+    { usage: { prompt_tokens: 123, completion_tokens: 45, total_tokens: 168 } },
   ]);
   const server = createHttpServer({ bridge });
   const port = await server.listen();
@@ -109,6 +116,7 @@ function check(name, cond, info) {
   check('sse terminates with [DONE]', body.trim().endsWith('data: [DONE]'));
   check('sse has tool_calls', body.indexOf('"tool_calls"') !== -1);
   check('sse has finish_reason tool_calls', body.indexOf('"tool_calls"') !== -1);
+  check('sse has usage chunk', body.indexOf('"usage"') !== -1 && body.indexOf('"prompt_tokens":123') !== -1);
 
   // Non-streaming: aggregator.
   const r2 = await postJson(port, {
@@ -124,6 +132,7 @@ function check(name, cond, info) {
   check('non-stream tool_calls args aggregated',
     msg && msg.tool_calls[0].function.arguments === '{"path":"."}');
   check('non-stream finish_reason', r2.json.choices[0].finish_reason === 'tool_calls');
+  check('non-stream usage aggregated', r2.json.usage && r2.json.usage.total_tokens === 168);
 
   await server.close();
 

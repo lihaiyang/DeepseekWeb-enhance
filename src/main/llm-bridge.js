@@ -43,7 +43,23 @@ const REASONING_ONLY_MESSAGE = 'DeepSeek 未返回可用正文（仅收到思考
 const MAX_SESSION_CHARS = 1500000;
 function estimateTokens(text) {
   if (!text) return 0;
-  return Math.ceil(text.length / 3);
+  let cjk = 0;
+  let ascii = 0;
+  let other = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if ((code >= 0x4e00 && code <= 0x9fff) ||
+        (code >= 0x3400 && code <= 0x4dbf) ||
+        (code >= 0x3000 && code <= 0x303f) ||
+        (code >= 0xff00 && code <= 0xffef)) {
+      cjk++;
+    } else if (code <= 0x7f) {
+      ascii++;
+    } else {
+      other++;
+    }
+  }
+  return Math.ceil(cjk + ascii / 4 + other / 2);
 }
 
 function messageContentText(content) {
@@ -105,7 +121,7 @@ class LlmBridge {
     this._stallTimeoutMs = (opts && Number.isFinite(opts.stallTimeoutMs)) ? opts.stallTimeoutMs : STALL_TIMEOUT_MS;
 
     // Session state — 同一个 DeepSeek 聊天窗口的续接追踪
-    this._session = { messageCount: 0, totalChars: 0, active: false };
+    this._session = { messageCount: 0, totalChars: 0, totalTokens: 0, active: false };
 
     ipcMain.on('llm:thinking', (_e, payload) => this._onIncoming('thinking', payload));
     ipcMain.on('llm:content',  (_e, payload) => this._onIncoming('content', payload));
@@ -197,33 +213,35 @@ class LlmBridge {
       }
     }
 
-    if (isContinuation && !prompt) {
-      // 续接：只格式化增量消息，不重复注入约束/工具/协议
-      try {
-        const startIndex = this._session.messageCount;
-        prompt = buildContinuationPrompt(messages, startIndex);
-      } catch (err) {
-        // 增量构建失败 → 降级为完整 prompt 重建 + 新建会话
-        this._logEvent('llm:continuation-fallback', { error: err.message });
-        isContinuation = false;
-        this._session = { messageCount: 0, totalChars: 0, active: false };
+    if (!prompt) {
+      if (isContinuation) {
+        // 续接：只格式化增量消息，不重复注入约束/工具/协议
+        try {
+          const startIndex = this._session.messageCount;
+          prompt = buildContinuationPrompt(messages, startIndex);
+        } catch (err) {
+          // 增量构建失败 → 降级为完整 prompt 重建 + 新建会话
+          this._logEvent('llm:continuation-fallback', { error: err.message });
+          isContinuation = false;
+          this._session = { messageCount: 0, totalChars: 0, totalTokens: 0, active: false };
+          try {
+            const template = this._getTemplate ? this._getTemplate() : undefined;
+            prompt = buildPrompt(body, { template });
+          } catch (err2) {
+            this._finishRequest(null, reject, err2);
+            return;
+          }
+        }
+      } else {
+        // 新会话：完整 prompt 构建，重置会话追踪
+        this._session = { messageCount: 0, totalChars: 0, totalTokens: 0, active: false };
         try {
           const template = this._getTemplate ? this._getTemplate() : undefined;
           prompt = buildPrompt(body, { template });
-        } catch (err2) {
-          this._finishRequest(null, reject, err2);
+        } catch (err) {
+          this._finishRequest(null, reject, err);
           return;
         }
-      }
-    } else {
-      // 新会话：完整 prompt 构建，重置会话追踪
-      this._session = { messageCount: 0, totalChars: 0, active: false };
-      try {
-        const template = this._getTemplate ? this._getTemplate() : undefined;
-        prompt = buildPrompt(body, { template });
-      } catch (err) {
-        this._finishRequest(null, reject, err);
-        return;
       }
     }
 
@@ -273,8 +291,11 @@ class LlmBridge {
     let rawContentLen = 0;
     let toolCallsLen = 0;
     let reasoningLen = 0;
+    let generatedTokens = 0;
     let hadError = false;
     let errorMessage = null;
+    const promptTokens = estimateTokens(handle.prompt);
+    const inputTokens = (this._session.totalTokens || 0) + promptTokens;
 
     const translator = createTranslator({
       id: 'chatcmpl-' + handle.requestId,
@@ -300,9 +321,20 @@ class LlmBridge {
     const state = {
       handle,
       translator,
+      inputTokens,
+      promptTokens,
       counters: () => ({ contentLen, rawContentLen, toolCallsLen, reasoningLen, hadError, errorMessage }),
-      noteRawContent: (delta) => { if (typeof delta === 'string') rawContentLen += delta.length; },
+      noteRawContent: (delta) => {
+        if (typeof delta === 'string') {
+          rawContentLen += delta.length;
+          generatedTokens += estimateTokens(delta);
+        }
+      },
+      noteReasoning: (delta) => {
+        if (typeof delta === 'string') generatedTokens += estimateTokens(delta);
+      },
       markError: (msg) => { hadError = true; errorMessage = msg; },
+      generatedTokens: () => generatedTokens,
       finalized: false,
       stallTimer: null,
     };
@@ -311,9 +343,12 @@ class LlmBridge {
     this._logEvent('llm:attempt', {
       requestId: handle.requestId,
       promptLen: handle.prompt.length,
+      promptTokens,
+      inputTokens,
       isContinuation: handle.isContinuation,
       invalidateSessionAfter: handle.invalidateSessionAfter,
       sessionChars: this._session.totalChars,
+      sessionTokens: this._session.totalTokens || 0,
     });
     const mode = this._getMode ? this._getMode() : 'expert';
     const stoppedRetry = this._getStoppedRetryConfig ? this._getStoppedRetryConfig() : undefined;
@@ -361,9 +396,26 @@ class LlmBridge {
     });
 
     // 更新会话追踪
-    if (!hadError) {
+    if (!hadError && !state.handle.aborted) {
+      const completionTokens = state.generatedTokens();
+      const totalTokens = state.inputTokens + completionTokens;
+      const usage = {
+        prompt_tokens: state.inputTokens,
+        completion_tokens: completionTokens,
+        total_tokens: totalTokens,
+      };
+      try {
+        state.handle.onChunk({
+          id: 'chatcmpl-' + state.handle.requestId,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model: state.handle.model,
+          choices: [],
+          usage,
+        });
+      } catch (_) {}
       if (state.handle.invalidateSessionAfter) {
-        this._session = { messageCount: 0, totalChars: 0, active: false };
+        this._session = { messageCount: 0, totalChars: 0, totalTokens: 0, active: false };
         this._logEvent('llm:session', {
           event: 'invalidated-after-standalone',
           requestId: state.handle.requestId,
@@ -372,15 +424,16 @@ class LlmBridge {
         const body = state.handle._body;
         const messages = (body && Array.isArray(body.messages)) ? body.messages : [];
         this._session.messageCount = messages.length;
-        this._session.totalChars += state.handle.prompt.length;
+        this._session.totalChars += state.handle.prompt.length + rawContentLen + reasoningLen;
+        this._session.totalTokens = totalTokens;
         this._session.active = true;
         this._logEvent('llm:session', {
           messageCount: this._session.messageCount,
           totalChars: this._session.totalChars,
-          estimatedTokens: estimateTokens(String(this._session.totalChars)),
+          totalTokens: this._session.totalTokens,
         });
       }
-    } else if (hadError) {
+    } else if (hadError || state.handle.aborted) {
       // 任何中断/错误后都让下次请求降级为完整 prompt 重建
       this._session.active = false;
     }
@@ -400,7 +453,10 @@ class LlmBridge {
     if (!state) return;
     try {
       if (kind === 'thinking') {
-        if (!state.handle.aborted) state.translator.pushReasoning(payload.delta || '');
+        if (!state.handle.aborted) {
+          state.noteReasoning(payload.delta || '');
+          state.translator.pushReasoning(payload.delta || '');
+        }
         this._armStallTimer(state);
       } else if (kind === 'content') {
         if (!state.handle.aborted) {
