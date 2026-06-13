@@ -178,6 +178,12 @@
     });
   }
 
+  if (dsAgent.settings && dsAgent.settings.open) {
+    document.getElementById('btn-settings').addEventListener('click', () => {
+      dsAgent.settings.open();
+    });
+  }
+
   // ── Mode toggle (expert / quick) ──────────────────────────────────
   const btnMode = document.getElementById('btn-mode');
   let currentMode = 'expert';

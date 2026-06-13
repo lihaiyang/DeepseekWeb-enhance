@@ -104,6 +104,7 @@
 
     // Set mode before sending the request so DeepSeekClient can read it.
     window.__dsAgentMode = (payload && payload.mode === 'quick') ? 'quick' : 'expert';
+    window.__dsAgentStoppedRetry = payload && payload.stoppedRetry;
 
     var c = ensureClient();
     if (!c) {

@@ -43,6 +43,66 @@
     } catch (_) {}
   }
 
+  function _sleep(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  function _stoppedRetryOptions() {
+    var cfg = window.__dsAgentStoppedRetry || {};
+    var maxRetries = Number(cfg.maxRetries);
+    var delayMs = Number(cfg.delayMs);
+    var prompt = (typeof cfg.prompt === 'string' && cfg.prompt.trim()) ? cfg.prompt : '继续';
+    if (!Number.isFinite(maxRetries)) maxRetries = 1;
+    if (!Number.isFinite(delayMs)) delayMs = 800;
+    maxRetries = Math.max(0, Math.min(5, Math.floor(maxRetries)));
+    delayMs = Math.max(0, Math.min(10000, Math.floor(delayMs)));
+    return { maxRetries: maxRetries, delayMs: delayMs, prompt: prompt };
+  }
+
+  function _isStoppedError(err) {
+    var msg = err && (err.message || String(err)) || '';
+    return msg.indexOf('DeepSeek 回复已停止') !== -1;
+  }
+
+  function _hasCompleteFinalToolCallFence(text) {
+    var raw = text || '';
+    var openRe = /(^|\n)[ \t]*```(?:tool_call|toolcall)[ \t]*(?:\r?\n)/g;
+    var match;
+    var open = null;
+    var count = 0;
+    while ((match = openRe.exec(raw)) !== null) {
+      count++;
+      open = { index: match.index + match[1].length, end: openRe.lastIndex };
+    }
+    if (!open || count !== 1) return false;
+
+    var closeEnd = -1;
+    var from = open.end;
+    while (from <= raw.length - 3) {
+      var idx = raw.indexOf('```', from);
+      if (idx === -1) break;
+      var atLineStart = idx === 0 || raw[idx - 1] === '\n';
+      if (atLineStart) {
+        var pos = idx + 3;
+        while (pos < raw.length && (raw[pos] === ' ' || raw[pos] === '\t')) pos++;
+        if (raw[pos] === '\r') pos++;
+        if (raw[pos] === '\n') {
+          closeEnd = pos + 1;
+          break;
+        }
+        if (pos >= raw.length) {
+          closeEnd = pos;
+          break;
+        }
+      }
+      from = idx + 1;
+    }
+    if (closeEnd === -1) return false;
+
+    var after = raw.slice(closeEnd);
+    return /^[\s]*$/.test(after);
+  }
+
   function DeepSeekClient() {
     this._onThinking = null;
     this._onContent = null;
@@ -319,6 +379,9 @@
     return _clickNewChatButton().then(_ensureModeAndNoSearch).then(function () {
       return new Promise(function (resolve, reject) {
         var settled = false;
+        var stoppedRetry = _stoppedRetryOptions();
+        var retryCount = 0;
+        var observedContent = '';
         function settle(err, result) {
           if (settled) return;
           settled = true;
@@ -330,6 +393,15 @@
           else     { _log('INFO', 'sendRaw done reqId=' + reqId + ' len=' + (result ? result.length : 0) + ' elapsed=' + elapsed + 'ms'); resolve(result); }
         }
 
+        function canRetryStopped(err) {
+          return _isStoppedError(err) &&
+            retryCount < stoppedRetry.maxRetries;
+        }
+
+        adapter.onContent(function (delta) {
+          if (typeof delta === 'string') observedContent += delta;
+        });
+
         var timeout = setTimeout(function () {
           _logError('sendRaw timeout reqId=' + reqId);
           self.abort();
@@ -338,11 +410,32 @@
 
         adapter.onEnd(function (full) { clearTimeout(timeout); settle(null, full); });
 
-        adapter.sendMessage(prompt).then(function (full) {
-          if (!settled) { clearTimeout(timeout); settle(null, full); }
-        }).catch(function (err) {
-          if (!settled) { clearTimeout(timeout); settle(err); }
-        });
+        function sendAttempt(text) {
+          adapter.sendMessage(text).then(function (full) {
+            if (!settled) { clearTimeout(timeout); settle(null, full); }
+          }).catch(function (err) {
+            if (settled) return;
+            if (_isStoppedError(err) && _hasCompleteFinalToolCallFence(observedContent)) {
+              _log('WARN', 'sendRaw stopped after complete tool_call; finishing without retry');
+              clearTimeout(timeout);
+              settle(null, observedContent);
+              return;
+            }
+            if (canRetryStopped(err)) {
+              retryCount++;
+              _log('WARN', 'sendRaw stopped; retry ' + retryCount + '/' + stoppedRetry.maxRetries +
+                ' after ' + stoppedRetry.delayMs + 'ms');
+              _sleep(stoppedRetry.delayMs).then(function () {
+                if (!settled) sendAttempt(stoppedRetry.prompt);
+              });
+              return;
+            }
+            clearTimeout(timeout);
+            settle(err);
+          });
+        }
+
+        sendAttempt(prompt);
       });
     });
   };
@@ -384,6 +477,9 @@
     return _ensureModeAndNoSearch().then(function () {
       return new Promise(function (resolve, reject) {
         var settled = false;
+        var stoppedRetry = _stoppedRetryOptions();
+        var retryCount = 0;
+        var observedContent = '';
         function settle(err, result) {
           if (settled) return;
           settled = true;
@@ -395,6 +491,15 @@
           else     { _log('INFO', 'sendContinuation done reqId=' + reqId + ' len=' + (result ? result.length : 0) + ' elapsed=' + elapsed + 'ms'); resolve(result); }
         }
 
+        function canRetryStopped(err) {
+          return _isStoppedError(err) &&
+            retryCount < stoppedRetry.maxRetries;
+        }
+
+        adapter.onContent(function (delta) {
+          if (typeof delta === 'string') observedContent += delta;
+        });
+
         var timeout = setTimeout(function () {
           _logError('sendContinuation timeout reqId=' + reqId);
           self.abort();
@@ -403,11 +508,32 @@
 
         adapter.onEnd(function (full) { clearTimeout(timeout); settle(null, full); });
 
-        adapter.sendMessage(prompt).then(function (full) {
-          if (!settled) { clearTimeout(timeout); settle(null, full); }
-        }).catch(function (err) {
-          if (!settled) { clearTimeout(timeout); settle(err); }
-        });
+        function sendAttempt(text) {
+          adapter.sendMessage(text).then(function (full) {
+            if (!settled) { clearTimeout(timeout); settle(null, full); }
+          }).catch(function (err) {
+            if (settled) return;
+            if (_isStoppedError(err) && _hasCompleteFinalToolCallFence(observedContent)) {
+              _log('WARN', 'sendContinuation stopped after complete tool_call; finishing without retry');
+              clearTimeout(timeout);
+              settle(null, observedContent);
+              return;
+            }
+            if (canRetryStopped(err)) {
+              retryCount++;
+              _log('WARN', 'sendContinuation stopped; retry ' + retryCount + '/' + stoppedRetry.maxRetries +
+                ' after ' + stoppedRetry.delayMs + 'ms');
+              _sleep(stoppedRetry.delayMs).then(function () {
+                if (!settled) sendAttempt(stoppedRetry.prompt);
+              });
+              return;
+            }
+            clearTimeout(timeout);
+            settle(err);
+          });
+        }
+
+        sendAttempt(prompt);
       });
     });
   };

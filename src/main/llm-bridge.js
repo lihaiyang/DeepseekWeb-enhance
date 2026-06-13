@@ -55,6 +55,7 @@ class LlmBridge {
     this._busy = false;
     this._getTemplate = (opts && typeof opts.getTemplate === 'function') ? opts.getTemplate : null;
     this._getMode = (opts && typeof opts.getMode === 'function') ? opts.getMode : null;
+    this._getStoppedRetryConfig = (opts && typeof opts.getStoppedRetryConfig === 'function') ? opts.getStoppedRetryConfig : null;
     this._log = (opts && typeof opts.log === 'function') ? opts.log : null;
     this._stallTimeoutMs = (opts && Number.isFinite(opts.stallTimeoutMs)) ? opts.stallTimeoutMs : STALL_TIMEOUT_MS;
 
@@ -251,11 +252,13 @@ class LlmBridge {
       sessionChars: this._session.totalChars,
     });
     const mode = this._getMode ? this._getMode() : 'expert';
+    const stoppedRetry = this._getStoppedRetryConfig ? this._getStoppedRetryConfig() : undefined;
     this._webContents.send('llm:run', {
       requestId: handle.requestId,
       prompt: handle.prompt,
       mode: mode,
       isContinuation: handle.isContinuation,
+      stoppedRetry: stoppedRetry,
     });
   }
 

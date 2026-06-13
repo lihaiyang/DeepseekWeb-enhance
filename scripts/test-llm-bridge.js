@@ -238,6 +238,27 @@ async function captureRejection(promise) {
     check('thinking+tail-tool: finish_reason tool_calls', finishReason(collected) === 'tool_calls');
   }
 
+  // 8. Stopped retry config is passed to the DeepSeek renderer.
+  {
+    const cfg = { maxRetries: 2, delayMs: 650, prompt: '继续' };
+    const { bridge, sent } = makeBridge({ getStoppedRetryConfig: () => cfg });
+    const collected = [];
+    const p = bridge.request({
+      body: { messages: [{ role: 'user', content: 'hi' }] },
+      onChunk: (c) => collected.push(c),
+    });
+    await sleep(10);
+    const rid = sent[0].payload.requestId;
+    ipcMainStub.emit('llm:content', { requestId: rid, delta: 'ok' });
+    ipcMainStub.emit('llm:end', { requestId: rid });
+    await p;
+    check('stopped-retry config: attached to run payload',
+      sent[0].payload.stoppedRetry &&
+      sent[0].payload.stoppedRetry.maxRetries === 2 &&
+      sent[0].payload.stoppedRetry.delayMs === 650 &&
+      sent[0].payload.stoppedRetry.prompt === '继续');
+  }
+
   console.log('');
   console.log(pass + ' passed, ' + fail + ' failed');
   process.exit(fail === 0 ? 0 : 1);

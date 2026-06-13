@@ -65,6 +65,7 @@ let httpPort = 0;
 let runner = null;
 let logStream = null;
 let promptEditorWindow = null;
+let settingsWindow = null;
 
 function defaultMode() { return 'expert'; }
 function getMode() { return loadConfig().mode || defaultMode(); }
@@ -72,6 +73,46 @@ function setMode(v) {
   const valid = (v === 'quick' || v === 'expert') ? v : defaultMode();
   saveConfig({ mode: valid });
   return valid;
+}
+
+function clampInt(value, fallback, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
+const DEFAULT_STOPPED_RETRY_CONFIG = {
+  maxRetries: 1,
+  delayMs: 800,
+  prompt: '继续',
+};
+
+function getStoppedRetryConfig() {
+  const cfg = loadConfig().stoppedRetry || {};
+  return {
+    maxRetries: clampInt(cfg.maxRetries, DEFAULT_STOPPED_RETRY_CONFIG.maxRetries, 0, 5),
+    delayMs: clampInt(cfg.delayMs, DEFAULT_STOPPED_RETRY_CONFIG.delayMs, 0, 10000),
+    prompt: (typeof cfg.prompt === 'string' && cfg.prompt.trim()) ? cfg.prompt : DEFAULT_STOPPED_RETRY_CONFIG.prompt,
+  };
+}
+
+function setStoppedRetryConfig(cfg) {
+  const next = {
+    maxRetries: clampInt(cfg && cfg.maxRetries, DEFAULT_STOPPED_RETRY_CONFIG.maxRetries, 0, 5),
+    delayMs: clampInt(cfg && cfg.delayMs, DEFAULT_STOPPED_RETRY_CONFIG.delayMs, 0, 10000),
+    prompt: (cfg && typeof cfg.prompt === 'string' && cfg.prompt.trim()) ? cfg.prompt.trim() : DEFAULT_STOPPED_RETRY_CONFIG.prompt,
+  };
+  saveConfig({ stoppedRetry: next });
+  log('settings', { event: 'stopped-retry-updated', ...next });
+  return next;
+}
+
+function resetStoppedRetryConfig() {
+  const cur = loadConfig();
+  delete cur.stoppedRetry;
+  try { fs.writeFileSync(appConfigPath(), JSON.stringify(cur, null, 2), 'utf-8'); } catch (_) {}
+  log('settings', { event: 'stopped-retry-reset' });
+  return getStoppedRetryConfig();
 }
 
 // ─── F12 DevTools ────────────────────────────────────────────────────
@@ -297,6 +338,36 @@ function openPromptEditor() {
   promptEditorWindow.on('closed', () => { promptEditorWindow = null; });
 }
 
+function openSettingsWindow() {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.show();
+    settingsWindow.focus();
+    return;
+  }
+  settingsWindow = new BrowserWindow({
+    width: 520, height: 420,
+    title: '设置',
+    parent: mainWindow || undefined,
+    modal: false,
+    backgroundColor: '#0e0e0f',
+    autoHideMenuBar: true,
+    ...TITLE_BAR_CONFIG,
+    webPreferences: {
+      preload: path.join(__dirname, '..', 'preload', 'settings.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+  settingsWindow.loadFile(path.join(__dirname, '..', 'renderer', 'settings', 'index.html'));
+  if (IS_DEV) settingsWindow.webContents.openDevTools({ mode: 'detach' });
+  enableDevToolsShortcut(settingsWindow.webContents);
+  settingsWindow.webContents.on('context-menu', (e, params) => {
+    showContextMenu(settingsWindow.webContents, params);
+  });
+  settingsWindow.on('closed', () => { settingsWindow = null; });
+}
+
 // ─── Tray ────────────────────────────────────────────────────────────
 function createTray() {
   const icon = nativeImage.createFromPath(iconPath());
@@ -369,6 +440,17 @@ function wireIpc() {
     return true;
   });
 
+  // Settings window + stopped retry config
+  ipcMain.on('settings:open', () => openSettingsWindow());
+  ipcMain.handle('settings:retry:get', () => getStoppedRetryConfig());
+  ipcMain.handle('settings:retry:get-default', () => DEFAULT_STOPPED_RETRY_CONFIG);
+  ipcMain.handle('settings:retry:is-custom', () => {
+    const cfg = loadConfig().stoppedRetry;
+    return !!(cfg && typeof cfg === 'object');
+  });
+  ipcMain.handle('settings:retry:set', (_e, cfg) => setStoppedRetryConfig(cfg || {}));
+  ipcMain.handle('settings:retry:reset', () => resetStoppedRetryConfig());
+
   // Context menu for xterm (non-DOM selection)
   ipcMain.on('contextmenu:show', (event, payload) => {
     const wc = event.sender;
@@ -411,6 +493,7 @@ app.whenReady().then(async () => {
   bridge = new LlmBridge({
     getTemplate: getCurrentPromptTemplate,
     getMode: getMode,
+    getStoppedRetryConfig: getStoppedRetryConfig,
     log: (tag, p) => log(tag, p || {}),
   });
   httpServer = createHttpServer({ bridge, log: (tag, p) => log('http', { tag, ...(p || {}) }) });

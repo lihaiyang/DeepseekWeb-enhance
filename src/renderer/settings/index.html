@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';">
+  <title>设置</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; height: 100%; background: #0e0e0f; color: #d8d8d8; font: 13px -apple-system, 'Segoe UI', Roboto, system-ui, sans-serif; }
+    #root { display: flex; flex-direction: column; height: 100vh; }
+    header {
+      padding: 10px 152px 10px 14px;
+      background: #16161a; border-bottom: 1px solid #26262b;
+      display: flex; align-items: center; gap: 12px;
+      -webkit-app-region: drag;
+    }
+    body.platform-darwin header { padding: 10px 14px 10px 80px; }
+    header h1 { font-size: 14px; font-weight: 600; margin: 0; }
+    header .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: #2a4d7a; color: #cbe2ff; -webkit-app-region: no-drag; }
+    header .badge.default { background: #2a3038; color: #a8a8a8; }
+    main { flex: 1; padding: 16px 18px 12px; overflow: auto; }
+    .section-title { margin: 0 0 12px; font-size: 13px; font-weight: 600; color: #eeeeee; }
+    .row {
+      display: grid; grid-template-columns: 152px 1fr; align-items: center;
+      gap: 12px; padding: 10px 0; border-top: 1px solid #232328;
+    }
+    .row:first-of-type { border-top: 0; }
+    .label { color: #c8c8c8; }
+    .hint { margin-top: 5px; font-size: 11px; color: #8d8d96; line-height: 1.45; }
+    .toggle-line { display: inline-flex; align-items: center; gap: 8px; }
+    input[type="checkbox"] { width: 15px; height: 15px; accent-color: #3a6ea5; }
+    input[type="number"], input[type="text"] {
+      width: 100%; min-height: 30px;
+      background: #0a0a0c; color: #e0e0e0;
+      border: 1px solid #2c2c33; border-radius: 6px;
+      padding: 5px 8px; font: inherit;
+    }
+    input[type="number"] { max-width: 160px; }
+    input:focus { outline: none; border-color: #3a6ea5; }
+    input:disabled { opacity: 0.55; cursor: not-allowed; }
+    footer {
+      padding: 10px 14px; background: #131318; border-top: 1px solid #26262b;
+      display: flex; align-items: center; gap: 8px;
+    }
+    footer .info { flex: 1; min-width: 0; font-size: 11px; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    button {
+      appearance: none; border: 1px solid #2c2c33; background: #1e1e22;
+      color: #d8d8d8; padding: 6px 14px; border-radius: 6px; cursor: pointer;
+      font-size: 12px;
+    }
+    button:hover { background: #25252b; }
+    button.primary { background: #2a4d7a; border-color: #3a6ea5; color: #fff; }
+    button.primary:hover { background: #3a5d8a; }
+    button.danger { background: #4a2424; border-color: #6a3434; color: #ffb0b0; }
+    button.danger:hover { background: #5a3434; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <header>
+      <h1>设置</h1>
+      <span id="status-badge" class="badge default">使用默认</span>
+    </header>
+    <main>
+      <h2 class="section-title">停止后自动重试</h2>
+      <div class="row">
+        <div class="label">启用</div>
+        <div>
+          <label class="toggle-line">
+            <input id="retry-enabled" type="checkbox">
+            <span>检测到 DeepSeek 停止后重发</span>
+          </label>
+        </div>
+      </div>
+      <div class="row">
+        <label class="label" for="max-retries">重试次数</label>
+        <div>
+          <input id="max-retries" type="number" min="1" max="5" step="1" inputmode="numeric">
+          <div class="hint">最多 5 次；关闭启用开关时保存为 0 次。</div>
+        </div>
+      </div>
+      <div class="row">
+        <label class="label" for="delay-ms">等待时间</label>
+        <div>
+          <input id="delay-ms" type="number" min="0" max="10000" step="100" inputmode="numeric">
+          <div class="hint">单位：毫秒。</div>
+        </div>
+      </div>
+      <div class="row">
+        <label class="label" for="retry-prompt">重发内容</label>
+        <div>
+          <input id="retry-prompt" type="text" spellcheck="false">
+          <div class="hint">默认发送“继续”。</div>
+        </div>
+      </div>
+    </main>
+    <footer>
+      <span class="info" id="info">加载中…</span>
+      <button id="btn-reset" class="danger" title="恢复内置默认设置">重置默认</button>
+      <button id="btn-cancel">取消</button>
+      <button id="btn-save" class="primary">保存</button>
+    </footer>
+  </div>
+  <script src="settings.js"></script>
+</body>
+</html>
